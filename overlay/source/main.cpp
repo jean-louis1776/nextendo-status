@@ -91,6 +91,26 @@ static void parseJeux(const std::string& body, std::vector<Row>& rows, int& play
         if (joueurs == std::string::npos) break;
         Row row;
         row.name = body.substr(n1, n2 - n1);
+        for (size_t i = 0; i + 5 < row.name.size(); ) {
+            if (row.name[i] == '\\' && row.name[i + 1] == 'u') {
+                int cp = 0;
+                bool hex = true;
+                for (int k = 0; k < 4; ++k) {
+                    const char h = row.name[i + 2 + k];
+                    int v = 0;
+                    if (h >= '0' && h <= '9') v = h - '0';
+                    else if (h >= 'a' && h <= 'f') v = h - 'a' + 10;
+                    else if (h >= 'A' && h <= 'F') v = h - 'A' + 10;
+                    else { hex = false; break; }
+                    cp = (cp << 4) | v;
+                }
+                if (hex && cp > 0 && cp < 128) {
+                    row.name.replace(i, 6, 1, static_cast<char>(cp));
+                    continue;
+                }
+            }
+            ++i;
+        }
         row.players = std::atoi(body.c_str() + joueurs + 10);
         if (row.players < 0) row.players = 0;
         players += row.players;
@@ -157,7 +177,7 @@ static void fetchOnce() {
     int players = 0;
     parseJeux(body, next.rows, players);
     next.ok = true;
-    next.summary = std::to_string(players) + " players · " + std::to_string(next.rows.size()) + " games";
+    next.summary = std::to_string(players);
     publish(next);
 }
 
@@ -192,6 +212,8 @@ class StatusGui : public tsl::Gui {
         });
         list->addItem(refresh);
         list->addItem(new tsl::elm::ListItem("Online", snap.summary));
+        if (!snap.rows.empty())
+            list->addItem(new tsl::elm::CategoryHeader("Games"));
         for (const auto& row : snap.rows)
             list->addItem(new tsl::elm::ListItem(row.name, std::to_string(row.players)));
         shown = snap.generation;
