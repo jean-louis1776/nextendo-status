@@ -207,12 +207,31 @@ struct CurlStop {
     std::atomic<bool>* stop = nullptr;
     std::atomic<curl_off_t>* got = nullptr;
     std::atomic<curl_off_t>* total = nullptr;
+    std::atomic<int>* speed = nullptr;
+    curl_off_t markBytes = 0;
+    u64 markTick = 0;
 };
 
 static int curlAbort(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* gate = static_cast<CurlStop*>(userdata);
     if (gate->got) gate->got->store(dlnow);
     if (gate->total) gate->total->store(dltotal);
+    const u64 now = armGetSystemTick();
+    if (gate->markTick == 0) {
+        gate->markTick = now;
+        gate->markBytes = dlnow;
+    } else {
+        const u64 dt = now - gate->markTick;
+        const u64 freq = armGetSystemTickFreq();
+        if (freq > 0 && dt > freq / 4) {
+            const curl_off_t delta = dlnow - gate->markBytes;
+            int perSec = 0;
+            if (delta > 0) perSec = static_cast<int>((delta * static_cast<curl_off_t>(freq)) / static_cast<curl_off_t>(dt));
+            if (gate->speed) gate->speed->store(perSec);
+            gate->markTick = now;
+            gate->markBytes = dlnow;
+        }
+    }
     return gate->stop && gate->stop->load() ? 1 : 0;
 }
 
@@ -341,8 +360,27 @@ static bool replaceNro(const std::string& tmp, const std::string& dest) {
     return ok;
 }
 
-static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install, std::atomic<curl_off_t>* got, std::atomic<curl_off_t>* total) {
-    CurlStop gate{stop, got, total};
+static std::string downloadStats(curl_off_t got, curl_off_t total, int bytesPerSec) {
+    int pct = 0;
+    if (total > 0) {
+        pct = static_cast<int>((got * 100) / total);
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+    }
+    char rate[24] = "0 B/s";
+    if (bytesPerSec >= 1024 * 1024)
+        std::snprintf(rate, sizeof rate, "%.1f MB/s", bytesPerSec / (1024.0 * 1024.0));
+    else if (bytesPerSec >= 1024)
+        std::snprintf(rate, sizeof rate, "%d KB/s", bytesPerSec / 1024);
+    else if (bytesPerSec > 0)
+        std::snprintf(rate, sizeof rate, "%d B/s", bytesPerSec);
+    char line[48];
+    std::snprintf(line, sizeof line, "%d%%  %s", pct, rate);
+    return line;
+}
+
+static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install, std::atomic<curl_off_t>* got, std::atomic<curl_off_t>* total, std::atomic<int>* speed) {
+    CurlStop gate{stop, got, total, speed};
     std::string body;
     const std::string api = std::string("https://api.github.com/repos/") + kUpdateRepo + "/releases/latest";
     if (!stop->load() && curlToString(api, body, &gate)) {
@@ -361,6 +399,9 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
                 install->store(false);
                 got->store(0);
                 total->store(0);
+                speed->store(0);
+                gate.markBytes = 0;
+                gate.markTick = 0;
                 phase->store(2);
                 const std::string tmp = nroPath + ".new";
                 const bool replaced = !stop->load() && curlToFile(url, tmp, &gate) && replaceNro(tmp, nroPath);
@@ -450,7 +491,7 @@ int main(int argc, char** argv) {
     Label urlLabel;
     Label codeLabel;
     Label leftHint = makeLabel(renderer, hintFont, "+ Exit", hint);
-    Label rightHint = makeLabel(renderer, creditFont, "by ILALEX & Nextendo", credit);
+    Label rightHint = makeLabel(renderer, creditFont, APP_VERSION "  by ILALEX & Nextendo", credit);
     Label errorLine;
     Label welcomeLabel = makeLabel(renderer, font, "Welcome", white);
     Label nameLabel;
@@ -476,6 +517,9 @@ int main(int argc, char** argv) {
     std::atomic<int> updatePhase{0};
     std::atomic<curl_off_t> updateGot{0};
     std::atomic<curl_off_t> updateTotal{0};
+    std::atomic<int> updateSpeed{0};
+    Label progressStats;
+    std::string progressShown;
     std::mutex updateMu;
     std::string updateText;
     int updateShown = 0;
@@ -484,7 +528,7 @@ int main(int argc, char** argv) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     socketInitializeDefault();
     servers.start();
-    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall, &updateGot, &updateTotal);
+    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall, &updateGot, &updateTotal, &updateSpeed);
     bool wasTouching = false;
 #if 0
     bool profileDrawn = false;
@@ -901,6 +945,14 @@ int main(int argc, char** argv) {
                     SDL_SetRenderDrawColor(renderer, 176, 96, 104, 255);
                     SDL_RenderFillRect(renderer, &fill);
                 }
+                const std::string stats = downloadStats(got, total, updateSpeed.load());
+                if (stats != progressShown) {
+                    progressShown = stats;
+                    setText(progressStats, renderer, creditFont, stats.c_str(), white);
+                }
+                int statsX = track.x + track.w - progressStats.w;
+                if (statsX < track.x) statsX = track.x;
+                drawLabel(renderer, progressStats, statsX, track.y - progressStats.h - 6);
             }
         }
         SDL_RenderPresent(renderer);
@@ -939,6 +991,7 @@ int main(int argc, char** argv) {
     destroyLabel(bannerTime);
     destroyLabel(updateTitle);
     destroyLabel(updateBody);
+    destroyLabel(progressStats);
     if (creditFont) TTF_CloseFont(creditFont);
     if (hintFont) TTF_CloseFont(hintFont);
     if (font) TTF_CloseFont(font);
