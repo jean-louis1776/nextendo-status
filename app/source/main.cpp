@@ -342,7 +342,6 @@ static bool replaceNro(const std::string& tmp, const std::string& dest) {
 }
 
 static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install, std::atomic<curl_off_t>* got, std::atomic<curl_off_t>* total) {
-    socketInitializeDefault();
     CurlStop gate{stop, got, total};
     std::string body;
     const std::string api = std::string("https://api.github.com/repos/") + kUpdateRepo + "/releases/latest";
@@ -369,7 +368,6 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
             }
         }
     }
-    socketExit();
 }
 
 static std::string consoleClock() {
@@ -484,6 +482,7 @@ int main(int argc, char** argv) {
     std::string nroPath = (argc > 0 && argv && argv[0] && std::string(argv[0]).find(".nro") != std::string::npos)
         ? argv[0] : "sdmc:/switch/nexstatus.nro";
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    socketInitializeDefault();
     servers.start();
     std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall, &updateGot, &updateTotal);
     bool wasTouching = false;
@@ -943,6 +942,7 @@ int main(int argc, char** argv) {
     if (window) SDL_DestroyWindow(window);
     TTF_Quit();
     SDL_Quit();
+    socketExit();
     timeExit();
     plExit();
     return renderer ? 0 : 1;

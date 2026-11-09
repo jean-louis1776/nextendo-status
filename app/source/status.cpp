@@ -267,7 +267,6 @@ void PublicStatus::start() {
     stop();
     state_ = new State();
     state_->thread = std::thread([this] {
-        socketInitializeDefault();
         curl_global_init(CURL_GLOBAL_DEFAULT);
         Counts counts;
         if (!loadCounts(state_->stop, counts)) {
@@ -275,13 +274,9 @@ void PublicStatus::start() {
                 state_->failed = true;
                 state_->ready = true;
             }
-            socketExit();
             return;
         }
-        if (state_->stop) {
-            socketExit();
-            return;
-        }
+        if (state_->stop) return;
         auto games = parseCounts(counts);
         {
             std::lock_guard<std::mutex> lock(state_->mu);
@@ -319,7 +314,6 @@ void PublicStatus::start() {
             state_->games = std::move(fresh);
             state_->revision++;
         }
-        socketExit();
     });
 }
 
