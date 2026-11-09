@@ -5,8 +5,14 @@
 #include <curl/curl.h>
 #include <switch.h>
 
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <poll.h>
+
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -51,7 +57,7 @@ static int curlAbort(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     return (g_abort.load() || !g_run.load()) ? 1 : 0;
 }
 
-static CURLcode httpGet(const char* url, std::string& body) {
+static CURLcode httpGet(const char* url, const char* ip, std::string& body) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) return CURLE_FAILED_INIT;
@@ -64,8 +70,14 @@ static CURLcode httpGet(const char* url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    struct curl_slist* resolve = nullptr;
+    if (ip != nullptr && ip[0] != '\0') {
+        char line[80];
+        std::snprintf(line, sizeof line, "nextendo.network:443:%s", ip);
+        resolve = curl_slist_append(nullptr, line);
+        curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve);
+    }
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -74,6 +86,7 @@ static CURLcode httpGet(const char* url, std::string& body) {
     long http = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
+    curl_slist_free_all(resolve);
     if (rc != CURLE_OK || http != 200 || body.empty()) return rc == CURLE_OK ? CURLE_HTTP_RETURNED_ERROR : rc;
     return CURLE_OK;
 }
@@ -155,7 +168,119 @@ static void closeNet(Net& net) {
     }
 }
 
-static bool openNet(Net& net) {
+static bool skipDnsName(const uint8_t* r, int got, size_t& i) {
+    while (i < static_cast<size_t>(got)) {
+        if ((r[i] & 0xC0) == 0xC0) {
+            i += 2;
+            return true;
+        }
+        const uint8_t len = r[i];
+        if (len == 0) {
+            i++;
+            return true;
+        }
+        i += static_cast<size_t>(1 + len);
+    }
+    return false;
+}
+
+static bool queryA(const char* host, u32 dns, struct in_addr* out) {
+    const int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) return false;
+    uint8_t q[256]{};
+    q[0] = 0x12;
+    q[1] = 0x34;
+    q[2] = 0x01;
+    q[5] = 1;
+    size_t n = 12;
+    const char* label = host;
+    while (*label && n < 200) {
+        const char* dot = std::strchr(label, '.');
+        const size_t len = dot ? static_cast<size_t>(dot - label) : std::strlen(label);
+        if (len == 0 || len > 63) {
+            close(fd);
+            return false;
+        }
+        q[n++] = static_cast<uint8_t>(len);
+        std::memcpy(q + n, label, len);
+        n += len;
+        if (!dot) break;
+        label = dot + 1;
+    }
+    q[n++] = 0;
+    q[n++] = 0;
+    q[n++] = 1;
+    q[n++] = 0;
+    q[n++] = 1;
+    struct sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(53);
+    dst.sin_addr.s_addr = dns;
+    if (sendto(fd, q, n, 0, reinterpret_cast<struct sockaddr*>(&dst), sizeof dst) < 0) {
+        close(fd);
+        return false;
+    }
+    struct pollfd wait{fd, POLLIN, 0};
+    if (poll(&wait, 1, 2000) <= 0) {
+        close(fd);
+        return false;
+    }
+    uint8_t reply[512];
+    const int got = recvfrom(fd, reply, sizeof reply, 0, nullptr, nullptr);
+    close(fd);
+    if (got < 12) return false;
+    const int answers = (reply[6] << 8) | reply[7];
+    size_t i = 12;
+    if (!skipDnsName(reply, got, i)) return false;
+    i += 4;
+    for (int a = 0; a < answers && i + 10 < static_cast<size_t>(got); ++a) {
+        if (!skipDnsName(reply, got, i) || i + 10 > static_cast<size_t>(got)) return false;
+        const int type = (reply[i] << 8) | reply[i + 1];
+        const int klass = (reply[i + 2] << 8) | reply[i + 3];
+        const int rdlen = (reply[i + 8] << 8) | reply[i + 9];
+        i += 10;
+        if (i + static_cast<size_t>(rdlen) > static_cast<size_t>(got)) return false;
+        if (type == 1 && klass == 1 && rdlen == 4) {
+            std::memcpy(&out->s_addr, reply + i, 4);
+            return true;
+        }
+        i += rdlen;
+    }
+    return false;
+}
+
+static bool lookupHost(char* ip, size_t ipLen) {
+    ip[0] = '\0';
+    resolverSetEnableServiceDiscovery(false);
+    struct addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo("nextendo.network", "443", &hints, &res) == 0 && res != nullptr && res->ai_addr != nullptr) {
+        inet_ntop(AF_INET, &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr, ip, ipLen);
+        freeaddrinfo(res);
+        return ip[0] != '\0';
+    }
+    if (res) freeaddrinfo(res);
+    u32 servers[4];
+    int count = 0;
+    u32 addr = 0, mask = 0, gateway = 0, dns1 = 0, dns2 = 0;
+    if (R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&addr, &mask, &gateway, &dns1, &dns2))) {
+        if (dns1) servers[count++] = dns1;
+        if (dns2) servers[count++] = dns2;
+    }
+    servers[count++] = htonl(0x01010101);
+    if (count < 4) servers[count++] = htonl(0x08080808);
+    struct in_addr found{};
+    for (int i = 0; i < count; ++i) {
+        if (!queryA("nextendo.network", servers[i], &found)) continue;
+        inet_ntop(AF_INET, &found, ip, ipLen);
+        return ip[0] != '\0';
+    }
+    return false;
+}
+
+static bool openNet(Net& net, char* ip, size_t ipLen) {
     SocketInitConfig cfg{};
     cfg.tcp_tx_buf_size = 0x4000;
     cfg.tcp_rx_buf_size = 0x4000;
@@ -182,6 +307,8 @@ static bool openNet(Net& net) {
             }
         }
         rc = socketInitialize(&cfg);
+        if (R_SUCCEEDED(rc) || R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized)
+            lookupHost(ip, ipLen);
     });
     if (R_SUCCEEDED(rc) || R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized) {
         net.socketOwn = R_SUCCEEDED(rc);
@@ -200,7 +327,8 @@ static void fetchOnce() {
         }
     }
     Net net;
-    if (!openNet(net)) {
+    char ip[16]{};
+    if (!openNet(net, ip, sizeof ip)) {
         Snap failed;
         failed.summary = "No network";
         publish(failed);
@@ -209,7 +337,7 @@ static void fetchOnce() {
     const u64 freq = armGetSystemTickFreq();
     g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
     std::string body;
-    const CURLcode rc = httpGet("https://nextendo.network/api/online-counts", body);
+    const CURLcode rc = httpGet("https://nextendo.network/api/online-counts", ip, body);
     g_deadline = 0;
     closeNet(net);
     if (rc != CURLE_OK || g_abort.load()) {
