@@ -17,36 +17,38 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install devkitPro
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-          wget https://apt.devkitpro.org/install-devkitpro-pacman
-          chmod +x ./install-devkitpro-pacman
-          sudo ./install-devkitpro-pacman
-          sudo dkp-pacman -Syu --noconfirm switch-dev switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib
-          echo "/opt/devkitpro/tools/bin" >> "$GITHUB_PATH"
-          echo "DEVKITPRO=/opt/devkitpro" >> "$GITHUB_ENV"
-
-      - name: Choose version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "APP_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
-            echo "TAG=v${{ inputs.version }}" >> "$GITHUB_ENV"
-          else
-            echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-            echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          fi
+      - name: Install libraries
+        run: dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib
 
       - name: Build
-        run: make -C app -j"$(nproc)" APP_VERSION="$APP_VERSION"
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="${GITHUB_REF_NAME#v}"
+          fi
+          make -C app -j"$(nproc)" APP_VERSION="$ver"
 
-      - name: Publish
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.TAG }}
-          files: app/nexstatus.nro
+          name: nexstatus
+          path: app/nexstatus.nro
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nexstatus
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+          files: nexstatus.nro
           generate_release_notes: true
