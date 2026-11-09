@@ -47,22 +47,24 @@ static size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
 static std::atomic<u64> g_deadline{0};
 
 static int curlAbort(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-    if (armGetSystemTick() > g_deadline.load()) return 1;
-    return (g_abort.load() || !g_run.load() || !g_open.load()) ? 1 : 0;
+    if (g_deadline.load() != 0 && armGetSystemTick() > g_deadline.load()) return 1;
+    return (g_abort.load() || !g_run.load()) ? 1 : 0;
 }
 
-static bool httpGet(const char* url, std::string& body) {
+static CURLcode httpGet(const char* url, std::string& body) {
     body.clear();
     CURL* curl = curl_easy_init();
-    if (!curl) return false;
+    if (!curl) return CURLE_FAILED_INIT;
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 6L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -72,7 +74,8 @@ static bool httpGet(const char* url, std::string& body) {
     long http = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
-    return rc == CURLE_OK && http == 200 && !body.empty();
+    if (rc != CURLE_OK || http != 200 || body.empty()) return rc == CURLE_OK ? CURLE_HTTP_RETURNED_ERROR : rc;
+    return CURLE_OK;
 }
 
 static void parseJeux(const std::string& body, std::vector<Row>& rows, int& players) {
@@ -130,30 +133,61 @@ static void publish(Snap next) {
     g_snap = std::move(next);
 }
 
-static bool openSocket(bool& own) {
-    own = false;
+struct Net {
+    bool socketOwn = false;
+    bool nifmOwn = false;
+    bool requestOpen = false;
+    NifmRequest request{};
+};
+
+static void closeNet(Net& net) {
+    if (net.requestOpen) {
+        nifmRequestClose(&net.request);
+        net.requestOpen = false;
+    }
+    if (net.socketOwn) {
+        socketExit();
+        net.socketOwn = false;
+    }
+    if (net.nifmOwn) {
+        nifmExit();
+        net.nifmOwn = false;
+    }
+}
+
+static bool openNet(Net& net) {
     SocketInitConfig cfg{};
-    cfg.tcp_tx_buf_size = 0x800;
-    cfg.tcp_rx_buf_size = 0x800;
-    cfg.tcp_tx_buf_max_size = 0x2500;
-    cfg.tcp_rx_buf_max_size = 0x2500;
+    cfg.tcp_tx_buf_size = 0x4000;
+    cfg.tcp_rx_buf_size = 0x4000;
+    cfg.tcp_tx_buf_max_size = 0x8000;
+    cfg.tcp_rx_buf_max_size = 0x8000;
     cfg.udp_tx_buf_size = 0x800;
     cfg.udp_rx_buf_size = 0x800;
     cfg.sb_efficiency = 1;
     cfg.num_bsd_sessions = 1;
     cfg.bsd_service_type = BsdServiceType_User;
     Result rc = 1;
-    bool nifmOwn = false;
     tsl::hlp::doWithSmSession([&] {
-        if (R_SUCCEEDED(nifmInitialize(NifmServiceType_User))) nifmOwn = true;
+        if (R_SUCCEEDED(nifmInitialize(NifmServiceType_User))) net.nifmOwn = true;
+        if (R_SUCCEEDED(nifmCreateRequest(&net.request, true))) {
+            net.requestOpen = true;
+            nifmRequestSubmit(&net.request);
+            const u64 freq = armGetSystemTickFreq();
+            const u64 start = armGetSystemTick();
+            while (freq != 0 && armGetSystemTick() - start < freq * 3) {
+                NifmRequestState state = NifmRequestState_Invalid;
+                if (R_FAILED(nifmGetRequestState(&net.request, &state))) break;
+                if (state == NifmRequestState_Available) break;
+                svcSleepThread(50'000'000);
+            }
+        }
         rc = socketInitialize(&cfg);
     });
-    if (R_SUCCEEDED(rc)) {
-        own = true;
+    if (R_SUCCEEDED(rc) || R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized) {
+        net.socketOwn = R_SUCCEEDED(rc);
         return true;
     }
-    if (R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized) return true;
-    if (nifmOwn) nifmExit();
+    closeNet(net);
     return false;
 }
 
@@ -165,24 +199,22 @@ static void fetchOnce() {
             g_snap.generation++;
         }
     }
-    bool own = false;
-    if (!openSocket(own)) {
+    Net net;
+    if (!openNet(net)) {
         Snap failed;
         failed.summary = "No network";
         publish(failed);
         return;
     }
     const u64 freq = armGetSystemTickFreq();
-    g_deadline = armGetSystemTick() + (freq ? freq * 12 : 0);
+    g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
     std::string body;
-    const bool ok = httpGet("https://nextendo.network/api/online-counts", body);
-    if (own) {
-        socketExit();
-        nifmExit();
-    }
-    if (!ok || g_abort.load() || !g_open.load()) {
+    const CURLcode rc = httpGet("https://nextendo.network/api/online-counts", body);
+    g_deadline = 0;
+    closeNet(net);
+    if (rc != CURLE_OK || g_abort.load()) {
         Snap failed;
-        failed.summary = "Couldn't load";
+        failed.summary = std::string("Couldn't load ") + std::to_string(static_cast<int>(rc));
         publish(failed);
         return;
     }
@@ -255,6 +287,7 @@ public:
 class NexOverlay : public tsl::Overlay {
 public:
     void initServices() override {
+        timeInitialize();
         curl_global_init(CURL_GLOBAL_DEFAULT);
         g_run = true;
         g_worker = std::thread(worker);
@@ -266,6 +299,7 @@ public:
         g_open = false;
         if (g_worker.joinable()) g_worker.join();
         curl_global_cleanup();
+        timeExit();
     }
 
     void onShow() override { g_open = true; }
