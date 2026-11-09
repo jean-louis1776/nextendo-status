@@ -12,8 +12,8 @@
 #include <thread>
 #include <vector>
 
-// libnx heap is a multiple of 2 MiB. 2 MiB is the smallest size that still fits one TLS request.
-extern "C" u64 __nx_heap_size = 0x200000;
+// 4 MiB is the smallest heap that fits the BSD transfer buffer and one TLS request.
+extern "C" u64 __nx_heap_size = 0x400000;
 
 struct Row {
     std::string name;
@@ -44,7 +44,10 @@ static size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return n;
 }
 
+static std::atomic<u64> g_deadline{0};
+
 static int curlAbort(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    if (armGetSystemTick() > g_deadline.load()) return 1;
     return (g_abort.load() || !g_run.load() || !g_open.load()) ? 1 : 0;
 }
 
@@ -56,8 +59,8 @@ static bool httpGet(const char* url, std::string& body) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 6L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
@@ -100,30 +103,62 @@ static void parseJeux(const std::string& body, std::vector<Row>& rows, int& play
     });
 }
 
+static void publish(Snap next) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    next.generation = g_snap.generation + 1;
+    if (!next.ok && g_snap.ok) return;
+    g_snap = std::move(next);
+}
+
+static bool openSocket(bool& own) {
+    own = false;
+    SocketInitConfig cfg = *socketGetDefaultInitConfig();
+    cfg.num_bsd_sessions = 1;
+    cfg.sb_efficiency = 4;
+    cfg.tcp_tx_buf_size = 0x4000;
+    cfg.tcp_rx_buf_size = 0x8000;
+    cfg.tcp_tx_buf_max_size = 0x8000;
+    cfg.tcp_rx_buf_max_size = 0x8000;
+    const Result rc = socketInitialize(&cfg);
+    if (R_SUCCEEDED(rc)) {
+        own = true;
+        return true;
+    }
+    return R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized;
+}
+
 static void fetchOnce() {
-    const SocketInitConfig cfg{
-        0x4000, 0x4000, 0, 0,
-        0x2400, 0xA500,
-        1, 1, BsdServiceType_User,
-    };
-    if (R_FAILED(socketInitialize(&cfg))) return;
-    std::string body;
-    const bool ok = httpGet("https://nextendo.network/api/online-counts", body);
-    socketExit();
-    Snap next;
-    if (!ok || g_abort.load()) {
+    {
         std::lock_guard<std::mutex> lock(g_mu);
-        if (!g_snap.ok) g_snap.summary = "Couldn't load";
-        g_snap.generation++;
+        if (!g_snap.ok) {
+            g_snap.summary = "Connecting...";
+            g_snap.generation++;
+        }
+    }
+    bool own = false;
+    if (!openSocket(own)) {
+        Snap failed;
+        failed.summary = "No network";
+        publish(failed);
         return;
     }
+    const u64 freq = armGetSystemTickFreq();
+    g_deadline = armGetSystemTick() + (freq ? freq * 12 : 0);
+    std::string body;
+    const bool ok = httpGet("https://nextendo.network/api/online-counts", body);
+    if (own) socketExit();
+    if (!ok || g_abort.load() || !g_open.load()) {
+        Snap failed;
+        failed.summary = "Couldn't load";
+        publish(failed);
+        return;
+    }
+    Snap next;
     int players = 0;
     parseJeux(body, next.rows, players);
     next.ok = true;
     next.summary = std::to_string(players) + " players · " + std::to_string(next.rows.size()) + " games";
-    std::lock_guard<std::mutex> lock(g_mu);
-    next.generation = g_snap.generation + 1;
-    g_snap = std::move(next);
+    publish(next);
 }
 
 static void worker() {
@@ -171,6 +206,7 @@ public:
     }
 
     void update() override {
+        g_open = true;
         Snap snap;
         {
             std::lock_guard<std::mutex> lock(g_mu);
