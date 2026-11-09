@@ -9,6 +9,8 @@ NUL
 
 app/build/
 overlay/build/
+pack/
+nexstatus.zip
 
 *.elf
 *.nro

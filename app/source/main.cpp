@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <sys/stat.h>
 #include <ctime>
 #include <cstring>
 #include <mutex>
@@ -331,6 +332,101 @@ static std::string jsonString(const std::string& body, const char* key) {
     return body.substr(pos, end - pos);
 }
 
+static bool replaceNro(const std::string& tmp, const std::string& dest);
+
+static bool endsWith(const std::string& text, const char* suffix) {
+    const size_t n = std::strlen(suffix);
+    return text.size() >= n && text.compare(text.size() - n, n, suffix) == 0;
+}
+
+static bool copyExact(FILE* in, const std::string& path, uint32_t size) {
+    FILE* out = std::fopen(path.c_str(), "wb");
+    if (!out) return false;
+    char buf[8192];
+    bool ok = true;
+    while (size > 0 && ok) {
+        const size_t chunk = size > sizeof buf ? sizeof buf : size;
+        ok = std::fread(buf, 1, chunk, in) == chunk && std::fwrite(buf, 1, chunk, out) == chunk;
+        size -= static_cast<uint32_t>(chunk);
+    }
+    std::fclose(out);
+    if (!ok) std::remove(path.c_str());
+    return ok;
+}
+
+static uint32_t readU32(const unsigned char* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+static uint16_t readU16(const unsigned char* p) {
+    return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+
+static bool installZip(const std::string& zipPath, const std::string& nroPath) {
+    FILE* in = std::fopen(zipPath.c_str(), "rb");
+    if (!in) return false;
+    mkdir("sdmc:/switch", 0777);
+    mkdir("sdmc:/switch/.overlays", 0777);
+    bool nro = false;
+    while (true) {
+        unsigned char header[30];
+        if (std::fread(header, 1, 30, in) != 30) break;
+        if (readU32(header) != 0x04034b50) break;
+        if (readU16(header + 8) != 0) {
+            std::fclose(in);
+            return false;
+        }
+        const uint32_t size = readU32(header + 18);
+        const uint16_t nameLen = readU16(header + 26);
+        const uint16_t extraLen = readU16(header + 28);
+        std::string name(nameLen, '\0');
+        if (nameLen != 0 && std::fread(name.data(), 1, nameLen, in) != nameLen) {
+            std::fclose(in);
+            return false;
+        }
+        if (extraLen != 0 && std::fseek(in, extraLen, SEEK_CUR) != 0) {
+            std::fclose(in);
+            return false;
+        }
+        std::string dest;
+        bool isNro = false;
+        if (endsWith(name, "nexstatus.nro")) {
+            dest = nroPath + ".new";
+            isNro = true;
+        } else if (endsWith(name, "nexstatus.ovl")) {
+            dest = "sdmc:/switch/.overlays/nexstatus.ovl.new";
+        }
+        if (dest.empty()) {
+            if (std::fseek(in, size, SEEK_CUR) != 0) {
+                std::fclose(in);
+                return false;
+            }
+            continue;
+        }
+        if (!copyExact(in, dest, size)) {
+            std::fclose(in);
+            return false;
+        }
+        if (isNro) {
+            if (!replaceNro(dest, nroPath)) {
+                std::fclose(in);
+                return false;
+            }
+            nro = true;
+        } else if (std::rename(dest.c_str(), "sdmc:/switch/.overlays/nexstatus.ovl") != 0) {
+            std::remove("sdmc:/switch/.overlays/nexstatus.ovl");
+            if (std::rename(dest.c_str(), "sdmc:/switch/.overlays/nexstatus.ovl") != 0) {
+                std::fclose(in);
+                return false;
+            }
+        }
+    }
+    std::fclose(in);
+    std::remove(zipPath.c_str());
+    return nro;
+}
+
 static bool replaceNro(const std::string& tmp, const std::string& dest) {
     const std::string bak = dest + ".bak";
     std::remove(bak.c_str());
@@ -391,7 +487,7 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
                 *note = "Updated to " + tag;
             }
             phase->store(1);
-            const std::string url = std::string("https://github.com/") + kUpdateRepo + "/releases/download/" + tag + "/nexstatus.nro";
+            const std::string url = std::string("https://github.com/") + kUpdateRepo + "/releases/download/" + tag + "/nexstatus.zip";
             while (!stop->load() && phase->load() != 3) {
                 while (!stop->load() && !install->load())
                     svcSleepThread(50'000'000);
@@ -403,8 +499,8 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
                 gate.markBytes = 0;
                 gate.markTick = 0;
                 phase->store(2);
-                const std::string tmp = nroPath + ".new";
-                const bool replaced = !stop->load() && curlToFile(url, tmp, &gate) && replaceNro(tmp, nroPath);
+                const std::string tmp = nroPath + ".zip";
+                const bool replaced = !stop->load() && curlToFile(url, tmp, &gate) && installZip(tmp, nroPath);
                 phase->store(replaced ? 3 : 4);
             }
         }

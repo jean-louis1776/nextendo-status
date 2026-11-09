@@ -4,19 +4,21 @@ Nintendo Switch homebrew that shows which [Nextendo](https://nextendo.network) g
 
 ## Install
 
-Copy `nexstatus.nro` to `sdmc:/switch/nexstatus.nro` and open it from the Homebrew Menu.
+Unzip the release at the root of the SD card. It contains `switch/nexstatus.nro` and `switch/.overlays/nexstatus.ovl` for Ultrahand.
 
-Releases are published on GitHub. When a newer one exists, NexStatus stops on a red screen. Press **A** to install it, then open the app again.
+When a newer release exists, NexStatus asks you to install it. Press **A** when it finishes to return to the Homebrew Menu.
 
 ## Build
 
 Install [devkitPro](https://devkitpro.org/) with `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-libjpeg-turbo`, `switch-curl` and `switch-mbedtls`, then:
 
 ```sh
-make -C app
+make
 ```
 
-The overlay in `overlay/` is a separate Tesla module and is not required for the status screen.
+That writes `nexstatus.zip`. Inside it, `switch/nexstatus.nro` is the Homebrew Menu app and `switch/.overlays/nexstatus.ovl` is the Ultrahand overlay.
+
+The overlay shows the same public counts while it is open and does not request anything while it is closed.
 
 ## License
 

@@ -44,12 +44,14 @@ jobs:
           else
             ver="${GITHUB_REF_NAME#v}"
           fi
-          make -C app -j"$(nproc)" APP_VERSION="$ver"
+          make -j"$(nproc)" APP_VERSION="$ver"
 
       - uses: actions/upload-artifact@v4
         with:
           name: nexstatus
-          path: app/nexstatus.nro
+          path: |
+            nexstatus.zip
+            app/nexstatus.nro
 
   publish:
     needs: build
@@ -62,5 +64,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
-          files: nexstatus.nro
+          files: |
+            nexstatus.zip
+            nexstatus.nro
           generate_release_notes: true

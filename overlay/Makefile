@@ -38,10 +38,11 @@ include $(DEVKITPRO)/libnx/switch_rules
 #   NACP building is skipped as well.
 #---------------------------------------------------------------------------------
 
-APP_TITLE			:=		nexstatus-overlay
-APP_VERSION 	:= 		1.3.0
+APP_TITLE	:=	NexStatus
+APP_AUTHOR	:=	ILALEX
+APP_VERSION	:=	0.1.7
 
-TARGET		:=	nexstatus-overlay
+TARGET		:=	nexstatus
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
