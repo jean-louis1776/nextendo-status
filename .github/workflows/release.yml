@@ -26,9 +26,13 @@ jobs:
 
       - name: Install libraries
         run: |
-          # XferCommand is only valid in [options]. Appending it lands in the
-          # last repo section, pacman ignores it, and pkg.devkitpro.org returns 403.
-          sed -i '/^\[options\]/a XferCommand = /usr/bin/curl -A "dkp-pacman" -L --retry 5 --retry-delay 2 -f -C - -o %o %u' /opt/devkitpro/pacman/etc/pacman.conf
+          # XferCommand is only valid in [options]. curl from GitHub Actions is
+          # still answered with 403; devkitPro's own workaround is wget with this agent.
+          if ! command -v wget >/dev/null; then
+            apt-get update && apt-get install -y wget
+          fi
+          sed -i '/^\[options\]/a XferCommand = /usr/bin/wget -U "dkp-pacman" --passive-ftp -c -O %o %u' /opt/devkitpro/pacman/etc/pacman.conf
+          rm -f /opt/devkitpro/pacman/var/lib/pacman/sync/dkp-* /var/lib/pacman/sync/dkp-*
           ok=0
           for _ in 1 2 3 4 5; do
             if dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib; then
