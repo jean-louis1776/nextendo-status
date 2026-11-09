@@ -28,7 +28,7 @@ long httpGet(const std::string& url, std::string& body, long timeout = 12) {
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus/" APP_VERSION);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);

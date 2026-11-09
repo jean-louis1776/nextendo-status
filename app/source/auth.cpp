@@ -105,7 +105,7 @@ int abortTransfer(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t
 }
 
 void tune(CURL* curl, std::atomic<bool>* stop) {
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus/0.1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus/" APP_VERSION);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
