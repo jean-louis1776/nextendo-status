@@ -428,15 +428,9 @@ static bool installZip(const std::string& zipPath, const std::string& nroPath) {
 }
 
 static bool replaceNro(const std::string& tmp, const std::string& dest) {
-    const std::string bak = dest + ".bak";
-    std::remove(bak.c_str());
-    if (std::rename(dest.c_str(), bak.c_str()) == 0) {
-        if (std::rename(tmp.c_str(), dest.c_str()) == 0) return true;
-        std::rename(bak.c_str(), dest.c_str());
-        return false;
-    }
     FILE* in = std::fopen(tmp.c_str(), "rb");
-    FILE* out = std::fopen(dest.c_str(), "wb");
+    FILE* out = std::fopen(dest.c_str(), "r+b");
+    if (!out) out = std::fopen(dest.c_str(), "wb");
     if (!in || !out) {
         if (in) std::fclose(in);
         if (out) std::fclose(out);
@@ -449,10 +443,10 @@ static bool replaceNro(const std::string& tmp, const std::string& dest) {
         if (n == 0) break;
         ok = std::fwrite(buf, 1, n, out) == n;
     }
-    if (std::ferror(in)) ok = false;
+    if (std::ferror(in) || std::fflush(out) != 0) ok = false;
     std::fclose(in);
     std::fclose(out);
-    std::remove(tmp.c_str());
+    if (ok) std::remove(tmp.c_str());
     return ok;
 }
 
@@ -694,6 +688,7 @@ int main(int argc, char** argv) {
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
         const int phaseNow = updatePhase.load();
+        servers.hold(phaseNow != 0);
         if (phaseNow == 3 && (down & HidNpadButton_A))
             break;
         if ((phaseNow == 1 || phaseNow == 4) && (down & HidNpadButton_A))

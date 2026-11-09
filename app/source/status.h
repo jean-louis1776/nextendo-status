@@ -17,6 +17,7 @@ class PublicStatus {
 public:
     void start();
     void stop();
+    void hold(bool on);
     bool ready() const;
     bool failed() const;
     int revision() const;

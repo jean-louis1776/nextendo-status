@@ -21,7 +21,7 @@ size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return n;
 }
 
-long httpGet(const std::string& url, std::string& body, long timeout = 12) {
+long httpGet(const std::string& url, std::string& body, const std::atomic<bool>& halt, long timeout = 12) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) return 0;
@@ -35,6 +35,11 @@ long httpGet(const std::string& url, std::string& body, long timeout = 12) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, +[](void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+        return static_cast<const std::atomic<bool>*>(userdata)->load() ? 1 : 0;
+    });
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(&halt));
     long http = 0;
     if (curl_easy_perform(curl) == CURLE_OK)
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
@@ -158,7 +163,7 @@ void setConnected(const std::atomic<bool>& stop, Counts& counts, const char* url
     if (replace) counts.erase(id);
     std::string body;
     int n = 0;
-    if (httpGet(url, body, 5) != 200) return;
+    if (httpGet(url, body, stop, 5) != 200) return;
     if (replace && !jsonOnline(body)) return;
     if (jsonInt(body, "connected", n) && n >= 0) counts[id] = n;
 }
@@ -170,7 +175,7 @@ const char* kServiceIds =
 bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
     counts.clear();
     std::string body;
-    if (httpGet("https://nextendo.network/api/online-counts", body) != 200) return false;
+    if (httpGet("https://nextendo.network/api/online-counts", body, stop) != 200) return false;
     for (const auto& item : kCatalog) readIds(body, counts, item.ids, false);
     if (stop.load()) return true;
 
@@ -186,14 +191,14 @@ bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
                 "0100227010460000", "0100e46006708000", "01001cc01b2d4000"})
             counts.erase(id);
         std::string catalog;
-        if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", catalog, 5) == 200)
+        if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", catalog, stop, 5) == 200)
             readIds(catalog, counts, kServiceIds, false);
     }
 
     if (!stop.load()) {
         std::string uno;
         int n = 0;
-        if (httpGet("https://nextendo.network/game-stats/uno-count", uno, 5) == 200 &&
+        if (httpGet("https://nextendo.network/game-stats/uno-count", uno, stop, 5) == 200 &&
             uno.find("\"game\":\"UNO\"") != std::string::npos && jsonInt(uno, "connected", n) && n >= 0)
             counts["0100b6e012ebe000"] = n;
     }
@@ -201,7 +206,7 @@ bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
         counts.erase("0100cea007d08000");
         std::string crypt;
         int n = 0;
-        if (httpGet("https://nextendo.network/service-catalog/v1/crypt-status", crypt, 5) == 200 &&
+        if (httpGet("https://nextendo.network/service-catalog/v1/crypt-status", crypt, stop, 5) == 200 &&
             jsonOnline(crypt) && crypt.find("room_members") != std::string::npos &&
             jsonInt(crypt, "players", n) && n >= 0 && n <= 1024)
             counts["0100cea007d08000"] = n;
@@ -210,7 +215,7 @@ bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
         counts.erase("01004cc023582000");
         std::string sr2;
         int n = 0;
-        if (httpGet("https://nextendo.network/service-catalog/v1/sr2-status", sr2, 5) == 200 &&
+        if (httpGet("https://nextendo.network/service-catalog/v1/sr2-status", sr2, stop, 5) == 200 &&
             jsonOnline(sr2) && sr2.find("native_transport_connections") != std::string::npos &&
             jsonInt(sr2, "players", n) && n >= 0 && n <= 50000)
             counts["01004cc023582000"] = n;
@@ -257,6 +262,8 @@ struct PublicStatus::State {
     std::thread thread;
     std::mutex mu;
     std::atomic<bool> stop{false};
+    std::atomic<bool> hold{false};
+    std::atomic<bool> halt{false};
     std::atomic<bool> ready{false};
     std::atomic<bool> failed{false};
     std::atomic<int> revision{0};
@@ -269,38 +276,47 @@ void PublicStatus::start() {
     state_->thread = std::thread([this] {
         curl_global_init(CURL_GLOBAL_DEFAULT);
         Counts counts;
-        if (!loadCounts(state_->stop, counts)) {
-            if (!state_->stop) {
+        while (state_->hold.load() && !state_->stop.load())
+            svcSleepThread(50'000'000);
+        if (!loadCounts(state_->halt, counts)) {
+            if (state_->stop) return;
+            if (!state_->halt.load() && !state_->hold.load()) {
                 state_->failed = true;
                 state_->ready = true;
+                return;
             }
-            return;
-        }
-        if (state_->stop) return;
-        auto games = parseCounts(counts);
-        {
-            std::lock_guard<std::mutex> lock(state_->mu);
-            state_->games = games;
-        }
-        state_->revision++;
-        state_->ready = true;
-        for (size_t i = 0; i < games.size() && !state_->stop; ++i) {
-            if (games[i].titleId.empty()) continue;
-            std::string jpeg;
-            const long icon = httpGet("https://nextendo.network/api/game-icon/" + games[i].titleId + ".jpg", jpeg);
-            if (state_->stop) break;
-            if (icon == 200 && jpeg.size() >= 2 && static_cast<unsigned char>(jpeg[0]) == 0xFF) {
+        } else if (!state_->stop) {
+            auto games = parseCounts(counts);
+            {
                 std::lock_guard<std::mutex> lock(state_->mu);
-                if (i < state_->games.size()) state_->games[i].jpeg = std::move(jpeg);
-                state_->revision++;
+                state_->games = games;
+            }
+            state_->revision++;
+            state_->ready = true;
+            for (size_t i = 0; i < games.size() && !state_->stop; ++i) {
+                if (games[i].titleId.empty()) continue;
+                std::string jpeg;
+                while (state_->hold.load() && !state_->stop.load())
+                    svcSleepThread(50'000'000);
+                if (state_->stop.load() || state_->halt.load()) break;
+                const long icon = httpGet("https://nextendo.network/api/game-icon/" + games[i].titleId + ".jpg", jpeg, state_->halt);
+                if (state_->stop) break;
+                if (icon == 200 && jpeg.size() >= 2 && static_cast<unsigned char>(jpeg[0]) == 0xFF) {
+                    std::lock_guard<std::mutex> lock(state_->mu);
+                    if (i < state_->games.size()) state_->games[i].jpeg = std::move(jpeg);
+                    state_->revision++;
+                }
             }
         }
         while (!state_->stop) {
             for (int i = 0; i < 150 && !state_->stop; ++i)
                 svcSleepThread(100'000'000);
             if (state_->stop) break;
+            while (state_->hold.load() && !state_->stop.load())
+                svcSleepThread(50'000'000);
+            if (state_->stop) break;
             Counts again;
-            if (!loadCounts(state_->stop, again)) continue;
+            if (!loadCounts(state_->halt, again)) continue;
             auto fresh = parseCounts(again);
             std::lock_guard<std::mutex> lock(state_->mu);
             for (auto& game : fresh) {
@@ -317,9 +333,16 @@ void PublicStatus::start() {
     });
 }
 
+void PublicStatus::hold(bool on) {
+    if (!state_) return;
+    state_->hold = on;
+    state_->halt = on || state_->stop.load();
+}
+
 void PublicStatus::stop() {
     if (!state_) return;
     state_->stop = true;
+    state_->halt = true;
     if (state_->thread.joinable()) state_->thread.join();
     delete state_;
     state_ = nullptr;
