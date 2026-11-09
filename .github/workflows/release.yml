@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number, for example 0.1.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install devkitPro
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+          wget https://apt.devkitpro.org/install-devkitpro-pacman
+          chmod +x ./install-devkitpro-pacman
+          sudo ./install-devkitpro-pacman
+          sudo dkp-pacman -Syu --noconfirm switch-dev switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib
+          echo "/opt/devkitpro/tools/bin" >> "$GITHUB_PATH"
+          echo "DEVKITPRO=/opt/devkitpro" >> "$GITHUB_ENV"
+
+      - name: Choose version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "APP_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+            echo "TAG=v${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: make -C app -j"$(nproc)" APP_VERSION="$APP_VERSION"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: app/nexstatus.nro
+          generate_release_notes: true
