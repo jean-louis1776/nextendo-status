@@ -554,9 +554,11 @@ int main(int argc, char** argv) {
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
         const int phaseNow = updatePhase.load();
+        if (phaseNow == 3 && (down & HidNpadButton_A))
+            break;
         if ((phaseNow == 1 || phaseNow == 4) && (down & HidNpadButton_A))
             updateInstall = true;
-        if (down & HidNpadButton_Plus)
+        if (phaseNow != 2 && (down & HidNpadButton_Plus))
             break;
 
         HidTouchScreenState touch{};
@@ -861,9 +863,8 @@ int main(int argc, char** argv) {
                     headline = "Downloading update...";
                     detail.clear();
                 } else if (phaseNow == 3) {
-                    std::lock_guard<std::mutex> lock(updateMu);
-                    headline = updateText;
-                    detail = "Open NexStatus again.";
+                    headline = "Installation complete";
+                    detail = "Press A to close.";
                 } else if (phaseNow == 4) {
                     headline = "Update failed";
                     detail = "Press A to try again.";
@@ -877,7 +878,10 @@ int main(int argc, char** argv) {
             SDL_RenderFillRect(renderer, &shade);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
             SDL_Rect box{(ww - 760) / 2, (wh - 240) / 2, 760, 240};
-            SDL_SetRenderDrawColor(renderer, 176, 32, 42, 255);
+            SDL_Rect frame{box.x - 4, box.y - 4, box.w + 8, box.h + 8};
+            SDL_SetRenderDrawColor(renderer, 176, 96, 104, 255);
+            SDL_RenderFillRect(renderer, &frame);
+            SDL_SetRenderDrawColor(renderer, 46, 46, 50, 255);
             SDL_RenderFillRect(renderer, &box);
             const int blockH = updateTitle.h + (updateBody.tex ? 16 + updateBody.h : 0);
             int textY = box.y + (box.h - blockH) / 2;
@@ -886,7 +890,7 @@ int main(int argc, char** argv) {
                 drawLabel(renderer, updateBody, box.x + (box.w - updateBody.w) / 2, textY + updateTitle.h + 16);
             if (phaseNow == 2) {
                 SDL_Rect track{box.x + 48, box.y + box.h - 56, box.w - 96, 18};
-                SDL_SetRenderDrawColor(renderer, 110, 20, 28, 255);
+                SDL_SetRenderDrawColor(renderer, 30, 30, 34, 255);
                 SDL_RenderFillRect(renderer, &track);
                 const curl_off_t got = updateGot.load();
                 const curl_off_t total = updateTotal.load();
@@ -894,7 +898,7 @@ int main(int argc, char** argv) {
                 if (fillW > track.w) fillW = track.w;
                 if (fillW > 0) {
                     SDL_Rect fill{track.x, track.y, fillW, track.h};
-                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    SDL_SetRenderDrawColor(renderer, 176, 96, 104, 255);
                     SDL_RenderFillRect(renderer, &fill);
                 }
             }
