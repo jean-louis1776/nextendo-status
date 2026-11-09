@@ -1,32 +1,36 @@
-# libtesla
+# NexStatus
 
-<p align="center">
-  <img src="https://i.imgur.com/fhwyjbd.png">
-</p>
+Nintendo Switch homebrew that shows which [Nextendo](https://nextendo.network) game servers are up and how many people are playing. The list refreshes every 15 seconds. No sign-in is required.
 
-libtesla is the interface between the Tesla overlay loader and user-made Overlays. It handles all layer creation, UI creation, drawing and input management.
-It's main goal is to make sure all overlays look and feel similar and don't differenciate themselves from the switch's native overlays.
+## Install
 
-## Screenshots
+Copy `nexstatus.nro` to `sdmc:/switch/nexstatus.nro` and open it from the Homebrew Menu.
 
-<div>
-    <img src="https://i.imgur.com/jJpxYjb.jpg" style="width: 50%; float: center">
-    <img src="https://i.imgur.com/nBUc7ps.jpg" style="width: 50%; float: right">
-</div>
+Releases are published on GitHub. When a newer one exists, NexStatus stops on a red screen. Press **A** to install it, then open the app again.
 
-`Overlays do NOT show up on Screenshots. These pictures were taken using a capture card`
+## Build
 
-## Example
+Install [devkitPro](https://devkitpro.org/) with `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-libjpeg-turbo`, `switch-curl` and `switch-mbedtls`, then:
 
-An example for how to use libtesla can be found here: https://github.com/WerWolv/libtesla/tree/master/example
-To create your own Overlay, please consider creating a new repository using the official Tesla overlay template: https://github.com/WerWolv/Tesla-Template
+```sh
+make -C app
+```
 
-**Please Note:** While it is possible to create overlays without libtesla, it's highly recommended to not do so. libtesla handles showing and hiding of overlays, button combo detection, layer creation and a lot more. Not using it will lead to an inconsistent user experience when using multiple different overlays ultimately making it worse for the end user. If something's missing, please consider opening a PR here.
+The overlay in `overlay/` is a separate Tesla module and is not required for the status screen.
 
-## Credits
+## License
 
-- **switchbrew** for nx-hbloader which is used as basis for overlay loading
-- **kardch** for the amazing icon
-- **All the devs on AtlasNX, RetroNX and Switchbrew** for their feedback
-- **All overlay devs** for making something awesome out of this :)
+NexStatus is released under the GNU General Public License v2.0. See [LICENSE](LICENSE).
 
+The QR code generator in `app/source/qrcodegen.cpp` is copyright Project Nayuki and is used under the MIT license. The Tesla overlay uses [libtesla](https://github.com/WerWolv/libtesla), which includes Sean Barrett's stb_truetype (public domain).
+
+## Acknowledgements
+
+- [devkitPro](https://devkitpro.org/) and [libnx](https://github.com/switchbrew/libnx)
+- [SDL2](https://www.libsdl.org/) and SDL2_ttf
+- [libcurl](https://curl.se/) and [libjpeg-turbo](https://libjpeg-turbo.org/)
+- [Project Nayuki](https://www.nayuki.io/page/qr-code-generator-library), for the QR code generator
+- [WerWolv](https://github.com/WerWolv), for libtesla
+- [Nextendo](https://nextendo.network), whose public status API this app displays
+
+NexStatus is not affiliated with Nintendo or Nextendo.

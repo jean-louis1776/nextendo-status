@@ -308,7 +308,7 @@ static std::string jsonString(const std::string& body, const char* key) {
     return body.substr(pos, end - pos);
 }
 
-static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<bool>* done) {
+static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install) {
     socketInitializeDefault();
     CurlStop gate{stop};
     std::string body;
@@ -316,20 +316,29 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
     if (!stop->load() && curlToString(api, body, &gate)) {
         const std::string tag = jsonString(body, "tag_name");
         if (!tag.empty() && versionParts(tag) > versionParts(APP_VERSION)) {
-            const std::string tmp = nroPath + ".new";
+            {
+                std::lock_guard<std::mutex> lock(*mu);
+                *note = "Updated to " + tag;
+            }
+            phase->store(1);
             const std::string url = std::string("https://github.com/") + kUpdateRepo + "/releases/download/" + tag + "/nexstatus.nro";
-            if (!stop->load() && curlToFile(url, tmp, &gate)) {
-                bool replaced = std::rename(tmp.c_str(), nroPath.c_str()) == 0;
-                if (!replaced) {
-                    std::remove(nroPath.c_str());
+            while (!stop->load() && phase->load() != 3) {
+                while (!stop->load() && !install->load())
+                    svcSleepThread(50'000'000);
+                if (stop->load()) break;
+                install->store(false);
+                phase->store(2);
+                const std::string tmp = nroPath + ".new";
+                bool replaced = !stop->load() && curlToFile(url, tmp, &gate);
+                if (replaced) {
                     replaced = std::rename(tmp.c_str(), nroPath.c_str()) == 0;
-                    if (!replaced) std::remove(tmp.c_str());
+                    if (!replaced) {
+                        std::remove(nroPath.c_str());
+                        replaced = std::rename(tmp.c_str(), nroPath.c_str()) == 0;
+                        if (!replaced) std::remove(tmp.c_str());
+                    }
                 }
-                if (replaced && !stop->load()) {
-                    std::lock_guard<std::mutex> lock(*mu);
-                    *note = "Updated to " + tag + ". Open NexStatus again.";
-                    done->store(true);
-                }
+                phase->store(replaced ? 3 : 4);
             }
         }
     }
@@ -415,7 +424,7 @@ int main(int argc, char** argv) {
     Label step3 = makeLabel(renderer, hintFont, "3. Allow NexStatus. This screen continues", hint);
     Label urlLabel;
     Label codeLabel;
-    Label leftHint = makeLabel(renderer, hintFont, "(+) Exit", hint);
+    Label leftHint = makeLabel(renderer, hintFont, "+ Exit", hint);
     Label rightHint = makeLabel(renderer, creditFont, "by ILALEX & Nextendo", credit);
     Label errorLine;
     Label welcomeLabel = makeLabel(renderer, font, "Welcome", white);
@@ -432,20 +441,22 @@ int main(int argc, char** argv) {
     Label bannerTitle;
     Label bannerSub;
     Label bannerTime;
-    Label updateNote;
+    Label updateTitle;
+    Label updateBody;
     int serverRev = -1;
     float serverScroll = 0;
     float serverVel = 0;
     std::atomic<bool> updateStop{false};
-    std::atomic<bool> updateDone{false};
+    std::atomic<bool> updateInstall{false};
+    std::atomic<int> updatePhase{0};
     std::mutex updateMu;
     std::string updateText;
-    bool updateDrawn = false;
+    int updateShown = 0;
     std::string nroPath = (argc > 0 && argv && argv[0] && std::string(argv[0]).find(".nro") != std::string::npos)
         ? argv[0] : "sdmc:/switch/nexstatus.nro";
     curl_global_init(CURL_GLOBAL_DEFAULT);
     servers.start();
-    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updateDone);
+    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall);
     bool wasTouching = false;
 #if 0
     bool profileDrawn = false;
@@ -514,6 +525,9 @@ int main(int argc, char** argv) {
     while (renderer && appletMainLoop()) {
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
+        const int phaseNow = updatePhase.load();
+        if ((phaseNow == 1 || phaseNow == 4) && (down & HidNpadButton_A))
+            updateInstall = true;
         if (down & HidNpadButton_Plus)
             break;
 
@@ -619,18 +633,22 @@ int main(int argc, char** argv) {
             const int listTop = 16 + 84 + 12;
             const int pitch = cardH + gap;
             const float maxScroll = std::max(0.f, ((static_cast<int>(serverRows.size()) + 1) / 2) * static_cast<float>(pitch) - (barY - listTop));
-            const u64 held = padGetButtons(&pad);
-            const HidAnalogStickState stick = padGetStickPos(&pad, 0);
-            float axis = 0;
-            if (held & HidNpadButton_Up) axis = -1.f;
-            else if (held & HidNpadButton_Down) axis = 1.f;
-            else if (stick.y > 6000 || stick.y < -6000) axis = -stick.y / 32767.f;
-            if (axis != 0.f) serverVel = axis * 18.f;
-            else serverVel *= 0.84f;
-            if (serverVel > -0.2f && serverVel < 0.2f) serverVel = 0;
-            serverScroll += serverVel;
-            if (serverScroll < 0) { serverScroll = 0; serverVel = 0; }
-            if (serverScroll > maxScroll) { serverScroll = maxScroll; serverVel = 0; }
+            if (updatePhase.load() != 0) {
+                serverVel = 0;
+            } else {
+                const u64 held = padGetButtons(&pad);
+                const HidAnalogStickState stick = padGetStickPos(&pad, 0);
+                float axis = 0;
+                if (held & HidNpadButton_Up) axis = -1.f;
+                else if (held & HidNpadButton_Down) axis = 1.f;
+                else if (stick.y > 6000 || stick.y < -6000) axis = -stick.y / 32767.f;
+                if (axis != 0.f) serverVel = axis * 18.f;
+                else serverVel *= 0.84f;
+                if (serverVel > -0.2f && serverVel < 0.2f) serverVel = 0;
+                serverScroll += serverVel;
+                if (serverScroll < 0) { serverScroll = 0; serverVel = 0; }
+                if (serverScroll > maxScroll) { serverScroll = maxScroll; serverVel = 0; }
+            }
         }
 
 #if 0
@@ -804,19 +822,41 @@ int main(int argc, char** argv) {
         SDL_RenderFillRect(renderer, &bar);
         SDL_SetRenderDrawColor(renderer, 70, 70, 76, 255);
         SDL_RenderDrawLine(renderer, 0, barY, ww, barY);
-        if (updateDone.load() && !updateDrawn) {
-            std::string text;
-            {
-                std::lock_guard<std::mutex> lock(updateMu);
-                text = updateText;
-            }
-            setText(updateNote, renderer, hintFont, text.c_str(), hint);
-            updateDrawn = true;
-        }
         drawLabel(renderer, leftHint, 32, barY + (barH - leftHint.h) / 2);
-        if (updateNote.tex)
-            drawLabel(renderer, updateNote, (ww - updateNote.w) / 2, barY + (barH - updateNote.h) / 2);
         drawLabel(renderer, rightHint, ww - 32 - rightHint.w, barY + (barH - rightHint.h) / 2);
+        if (phaseNow != 0) {
+            if (phaseNow != updateShown) {
+                updateShown = phaseNow;
+                std::string headline = "Update available";
+                std::string detail = "Press A to install.";
+                if (phaseNow == 2) {
+                    headline = "Installing update...";
+                    detail.clear();
+                } else if (phaseNow == 3) {
+                    std::lock_guard<std::mutex> lock(updateMu);
+                    headline = updateText;
+                    detail = "Open NexStatus again.";
+                } else if (phaseNow == 4) {
+                    headline = "Update failed";
+                    detail = "Press A to try again.";
+                }
+                setText(updateTitle, renderer, font, headline.c_str(), white);
+                setText(updateBody, renderer, hintFont, detail.c_str(), white);
+            }
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+            SDL_Rect shade{0, 0, ww, wh};
+            SDL_RenderFillRect(renderer, &shade);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            SDL_Rect box{(ww - 760) / 2, (wh - 240) / 2, 760, 240};
+            SDL_SetRenderDrawColor(renderer, 176, 32, 42, 255);
+            SDL_RenderFillRect(renderer, &box);
+            const int blockH = updateTitle.h + (updateBody.tex ? 16 + updateBody.h : 0);
+            int textY = box.y + (box.h - blockH) / 2;
+            drawLabel(renderer, updateTitle, box.x + (box.w - updateTitle.w) / 2, textY);
+            if (updateBody.tex)
+                drawLabel(renderer, updateBody, box.x + (box.w - updateBody.w) / 2, textY + updateTitle.h + 16);
+        }
         SDL_RenderPresent(renderer);
     }
 
@@ -851,7 +891,8 @@ int main(int argc, char** argv) {
     destroyLabel(bannerTitle);
     destroyLabel(bannerSub);
     destroyLabel(bannerTime);
-    destroyLabel(updateNote);
+    destroyLabel(updateTitle);
+    destroyLabel(updateBody);
     if (creditFont) TTF_CloseFont(creditFont);
     if (hintFont) TTF_CloseFont(hintFont);
     if (font) TTF_CloseFont(font);
