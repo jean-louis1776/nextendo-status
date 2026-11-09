@@ -12,8 +12,8 @@
 #include <thread>
 #include <vector>
 
-// 4 MiB is the smallest heap that fits the BSD transfer buffer and one TLS request.
-extern "C" u64 __nx_heap_size = 0x400000;
+// Tesla's framebuffer already uses most of a 4 MiB heap, so the BSD buffer has to stay small.
+extern "C" u64 __nx_heap_size = 0x800000;
 
 struct Row {
     std::string name;
@@ -132,19 +132,29 @@ static void publish(Snap next) {
 
 static bool openSocket(bool& own) {
     own = false;
-    SocketInitConfig cfg = *socketGetDefaultInitConfig();
+    SocketInitConfig cfg{};
+    cfg.tcp_tx_buf_size = 0x800;
+    cfg.tcp_rx_buf_size = 0x800;
+    cfg.tcp_tx_buf_max_size = 0x2500;
+    cfg.tcp_rx_buf_max_size = 0x2500;
+    cfg.udp_tx_buf_size = 0x800;
+    cfg.udp_rx_buf_size = 0x800;
+    cfg.sb_efficiency = 1;
     cfg.num_bsd_sessions = 1;
-    cfg.sb_efficiency = 4;
-    cfg.tcp_tx_buf_size = 0x4000;
-    cfg.tcp_rx_buf_size = 0x8000;
-    cfg.tcp_tx_buf_max_size = 0x8000;
-    cfg.tcp_rx_buf_max_size = 0x8000;
-    const Result rc = socketInitialize(&cfg);
+    cfg.bsd_service_type = BsdServiceType_User;
+    Result rc = 1;
+    bool nifmOwn = false;
+    tsl::hlp::doWithSmSession([&] {
+        if (R_SUCCEEDED(nifmInitialize(NifmServiceType_User))) nifmOwn = true;
+        rc = socketInitialize(&cfg);
+    });
     if (R_SUCCEEDED(rc)) {
         own = true;
         return true;
     }
-    return R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized;
+    if (R_DESCRIPTION(rc) == LibnxError_AlreadyInitialized) return true;
+    if (nifmOwn) nifmExit();
+    return false;
 }
 
 static void fetchOnce() {
@@ -166,7 +176,10 @@ static void fetchOnce() {
     g_deadline = armGetSystemTick() + (freq ? freq * 12 : 0);
     std::string body;
     const bool ok = httpGet("https://nextendo.network/api/online-counts", body);
-    if (own) socketExit();
+    if (own) {
+        socketExit();
+        nifmExit();
+    }
     if (!ok || g_abort.load() || !g_open.load()) {
         Snap failed;
         failed.summary = "Couldn't load";
