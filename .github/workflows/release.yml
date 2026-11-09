@@ -2,6 +2,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -24,9 +26,9 @@ jobs:
 
       - name: Install libraries
         run: |
-          cat >> /opt/devkitpro/pacman/etc/pacman.conf << 'EOF'
-          XferCommand = /usr/bin/curl -A "Mozilla/5.0" -L --retry 5 --retry-delay 2 -f -C - -o %o %u
-          EOF
+          # XferCommand is only valid in [options]. Appending it lands in the
+          # last repo section, pacman ignores it, and pkg.devkitpro.org returns 403.
+          sed -i '/^\[options\]/a XferCommand = /usr/bin/curl -A "dkp-pacman" -L --retry 5 --retry-delay 2 -f -C - -o %o %u' /opt/devkitpro/pacman/etc/pacman.conf
           ok=0
           for _ in 1 2 3 4 5; do
             if dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib; then
@@ -40,11 +42,12 @@ jobs:
       - name: Build
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            ver="${{ inputs.version }}"
+            make -j"$(nproc)" APP_VERSION="${{ inputs.version }}"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            make -j"$(nproc)" APP_VERSION="${GITHUB_REF_NAME#v}"
           else
-            ver="${GITHUB_REF_NAME#v}"
+            make -j"$(nproc)"
           fi
-          make -j"$(nproc)" APP_VERSION="$ver"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -54,6 +57,7 @@ jobs:
             app/nexstatus.nro
 
   publish:
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     steps:
