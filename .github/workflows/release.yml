@@ -23,7 +23,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install libraries
-        run: dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib
+        run: |
+          cat >> /opt/devkitpro/pacman/etc/pacman.conf << 'EOF'
+          XferCommand = /usr/bin/curl -A "Mozilla/5.0" -L --retry 5 --retry-delay 2 -f -C - -o %o %u
+          EOF
+          ok=0
+          for _ in 1 2 3 4 5; do
+            if dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib; then
+              ok=1
+              break
+            fi
+            sleep 8
+          done
+          test "$ok" = 1
 
       - name: Build
         run: |
