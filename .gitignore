@@ -3,6 +3,10 @@ release
 lib
 *.bz2
 
+.idea/
+.vscode/
+NUL
+
 app/build/
 overlay/build/
 
