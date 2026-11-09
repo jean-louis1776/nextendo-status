@@ -12,7 +12,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	NexStatus
 APP_AUTHOR	:=	ILALEX
-APP_VERSION	:=	0.1.2
+APP_VERSION	:=	0.1.3
 
 TARGET		:=	nexstatus
 BUILD		:=	build
@@ -106,7 +106,11 @@ $(OUTPUT).nro		:	$(OUTPUT).elf $(OUTPUT).nacp
 
 $(OUTPUT).elf	:	$(OFILES)
 
-$(OFILES_SRC)	: $(HFILES_BIN)
+$(OFILES_SRC)	: $(HFILES_BIN) version.stamp
+
+version.stamp:
+	@printf '%s\n' "$(APP_VERSION)" > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
 %.bin.o	%_bin.h :	%.bin
 	@echo $(notdir $<)

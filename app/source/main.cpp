@@ -205,10 +205,14 @@ static const char* kUpdateRepo = "jean-louis1776/nextendo-status";
 
 struct CurlStop {
     std::atomic<bool>* stop = nullptr;
+    std::atomic<curl_off_t>* got = nullptr;
+    std::atomic<curl_off_t>* total = nullptr;
 };
 
-static int curlAbort(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+static int curlAbort(void* userdata, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* gate = static_cast<CurlStop*>(userdata);
+    if (gate->got) gate->got->store(dlnow);
+    if (gate->total) gate->total->store(dltotal);
     return gate->stop && gate->stop->load() ? 1 : 0;
 }
 
@@ -308,9 +312,38 @@ static std::string jsonString(const std::string& body, const char* key) {
     return body.substr(pos, end - pos);
 }
 
-static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install) {
+static bool replaceNro(const std::string& tmp, const std::string& dest) {
+    const std::string bak = dest + ".bak";
+    std::remove(bak.c_str());
+    if (std::rename(dest.c_str(), bak.c_str()) == 0) {
+        if (std::rename(tmp.c_str(), dest.c_str()) == 0) return true;
+        std::rename(bak.c_str(), dest.c_str());
+        return false;
+    }
+    FILE* in = std::fopen(tmp.c_str(), "rb");
+    FILE* out = std::fopen(dest.c_str(), "wb");
+    if (!in || !out) {
+        if (in) std::fclose(in);
+        if (out) std::fclose(out);
+        return false;
+    }
+    char buf[8192];
+    bool ok = true;
+    while (ok) {
+        const size_t n = std::fread(buf, 1, sizeof buf, in);
+        if (n == 0) break;
+        ok = std::fwrite(buf, 1, n, out) == n;
+    }
+    if (std::ferror(in)) ok = false;
+    std::fclose(in);
+    std::fclose(out);
+    std::remove(tmp.c_str());
+    return ok;
+}
+
+static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex* mu, std::string* note, std::atomic<int>* phase, std::atomic<bool>* install, std::atomic<curl_off_t>* got, std::atomic<curl_off_t>* total) {
     socketInitializeDefault();
-    CurlStop gate{stop};
+    CurlStop gate{stop, got, total};
     std::string body;
     const std::string api = std::string("https://api.github.com/repos/") + kUpdateRepo + "/releases/latest";
     if (!stop->load() && curlToString(api, body, &gate)) {
@@ -327,17 +360,11 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
                     svcSleepThread(50'000'000);
                 if (stop->load()) break;
                 install->store(false);
+                got->store(0);
+                total->store(0);
                 phase->store(2);
                 const std::string tmp = nroPath + ".new";
-                bool replaced = !stop->load() && curlToFile(url, tmp, &gate);
-                if (replaced) {
-                    replaced = std::rename(tmp.c_str(), nroPath.c_str()) == 0;
-                    if (!replaced) {
-                        std::remove(nroPath.c_str());
-                        replaced = std::rename(tmp.c_str(), nroPath.c_str()) == 0;
-                        if (!replaced) std::remove(tmp.c_str());
-                    }
-                }
+                const bool replaced = !stop->load() && curlToFile(url, tmp, &gate) && replaceNro(tmp, nroPath);
                 phase->store(replaced ? 3 : 4);
             }
         }
@@ -449,6 +476,8 @@ int main(int argc, char** argv) {
     std::atomic<bool> updateStop{false};
     std::atomic<bool> updateInstall{false};
     std::atomic<int> updatePhase{0};
+    std::atomic<curl_off_t> updateGot{0};
+    std::atomic<curl_off_t> updateTotal{0};
     std::mutex updateMu;
     std::string updateText;
     int updateShown = 0;
@@ -456,7 +485,7 @@ int main(int argc, char** argv) {
         ? argv[0] : "sdmc:/switch/nexstatus.nro";
     curl_global_init(CURL_GLOBAL_DEFAULT);
     servers.start();
-    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall);
+    std::thread updateThread(checkUpdate, std::move(nroPath), &updateStop, &updateMu, &updateText, &updatePhase, &updateInstall, &updateGot, &updateTotal);
     bool wasTouching = false;
 #if 0
     bool profileDrawn = false;
@@ -830,7 +859,7 @@ int main(int argc, char** argv) {
                 std::string headline = "Update available";
                 std::string detail = "Press A to install.";
                 if (phaseNow == 2) {
-                    headline = "Installing update...";
+                    headline = "Downloading update...";
                     detail.clear();
                 } else if (phaseNow == 3) {
                     std::lock_guard<std::mutex> lock(updateMu);
@@ -856,6 +885,20 @@ int main(int argc, char** argv) {
             drawLabel(renderer, updateTitle, box.x + (box.w - updateTitle.w) / 2, textY);
             if (updateBody.tex)
                 drawLabel(renderer, updateBody, box.x + (box.w - updateBody.w) / 2, textY + updateTitle.h + 16);
+            if (phaseNow == 2) {
+                SDL_Rect track{box.x + 48, box.y + box.h - 56, box.w - 96, 18};
+                SDL_SetRenderDrawColor(renderer, 110, 20, 28, 255);
+                SDL_RenderFillRect(renderer, &track);
+                const curl_off_t got = updateGot.load();
+                const curl_off_t total = updateTotal.load();
+                int fillW = total > 0 ? static_cast<int>((track.w * got) / total) : 0;
+                if (fillW > track.w) fillW = track.w;
+                if (fillW > 0) {
+                    SDL_Rect fill{track.x, track.y, fillW, track.h};
+                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    SDL_RenderFillRect(renderer, &fill);
+                }
+            }
         }
         SDL_RenderPresent(renderer);
     }
