@@ -1,56 +1,49 @@
 # NexStatus
 
-NexStatus shows which [Nextendo](https://nextendo.network) game servers are up and how many people are playing. It is a Nintendo Switch homebrew app, plus an [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay for checking the same public counts without leaving a game.
-
-No account and no sign-in. The console reads Nextendo's public status API.
+NexStatus is a Nintendo Switch homebrew application for [Nextendo](https://nextendo.network) server status. It lists game servers, player counts, and, after sign-in, lobbies and players. An [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay shows the same public counts.
 
 NexStatus is not affiliated with Nintendo or Nextendo.
 
-## What you get
+## Install
 
-The release is one zip. Unzip it at the root of the SD card, not inside another folder. It already contains the right paths:
+The release is one zip. Extract it at the root of the SD card.
 
-| Path on the SD card | What it is |
+| Path | Contents |
 | --- | --- |
-| `switch/nexstatus.nro` | The app in the Homebrew Menu |
-| `switch/.overlays/nexstatus.ovl` | The Ultrahand overlay |
+| `switch/nexstatus.nro` | Homebrew Menu application |
+| `switch/.overlays/nexstatus.ovl` | Ultrahand overlay |
 
-You need the Homebrew Menu for the app, and Ultrahand for the overlay. The dot in `.overlays` is part of the folder name. Ultrahand only loads overlays from `sdmc:/switch/.overlays/`.
+The Homebrew Menu is required for the application. Ultrahand is required for the overlay. Overlay files must be in `sdmc:/switch/.overlays/`.
 
-## The app
+## Application
 
-Open **NexStatus** from the Homebrew Menu.
+Open NexStatus from the Homebrew Menu.
 
-The screen is a gray list of game servers. Each row has the game icon, the name, whether that server is online, and how many people are playing. Names that do not fit are cut with `...`. The list is sorted with the busiest servers first. Servers with nobody on them stay in the list, so an empty server is not hidden.
+The main screen lists game servers, busiest first. Each entry shows the game icon, name, server state, and player count. The header shows the number of players online, the number of active servers, and the time of the last count update. Counts refresh about every 15 seconds.
 
-A plaque at the top summarizes the network: how many game servers are offline, or that everything is up, then how many of the servers are active and how many players are online. The clock under that is the console clock. It changes only when a player count or an online/offline state actually changes, not on every refresh.
+The account control is in the header.
 
-The list itself refreshes about every 15 seconds. Scroll it with the stick.
+- Signed out: **A** opens sign-in. The console shows a code and a QR code. The phone completes sign-in. The console does not open a browser.
+- Signed in: **A** opens the account screen, which shows the username and friend code. **X** logs out.
 
-**(+)** on the bottom left leaves the app. The bottom right is the version and the credit, `by ILALEX & Nextendo`.
+**A** on a server opens that game. Signed out, the page asks for sign-in. Signed in, it shows lobbies and players from Nextendo, including mode, room state, occupied slots, and a friend marker. The page loads on open and refreshes about every 15 seconds while it stays open. **B** returns to the list.
+
+**(−)** on the main screen opens credits. It does nothing on other screens. **(+)** exits. The bottom right shows the version and the battery level.
 
 ### Updates
 
-On launch, the app checks GitHub for a newer release. If one exists, a gray window with a soft red border blocks the list.
+On launch the application checks GitHub for a newer release. If one is available, an update dialog is shown.
 
-- **A** starts the download. The window shows percent and speed above the bar.
-- When it finishes, the window says the install is complete. **A** closes the app. Open it again from the Homebrew Menu.
-- If the install fails, **A** tries again.
-- **(+)** is ignored while the file is downloading, so leaving mid-download does not break the app.
+- **A** downloads and installs it. The dialog shows progress.
+- **(+)** does nothing while the download is in progress.
+- On success, the dialog asks for **A** to close the application. Start it again from the Homebrew Menu.
+- On failure, **A** retries.
 
-The download is `nexstatus.zip`. The app installs both `switch/nexstatus.nro` and `switch/.overlays/nexstatus.ovl`, so the overlay updates together with the app. The first time you add the overlay, unzip a release once so the file exists. After that, updating inside the app replaces both files.
+The installer uses `nexstatus.zip` and replaces both `switch/nexstatus.nro` and `switch/.overlays/nexstatus.ovl`.
 
-## The overlay
+## Overlay
 
-Open Ultrahand, then **NexStatus**.
-
-It shows the same public counts without icons, so it stays small:
-
-1. **Refresh** asks for new numbers immediately.
-2. **Online** is the total number of players.
-3. **Games** is one row per game: the name on the left, the player count on the right. The busiest games are first. Scroll for the rest.
-
-While the overlay is open, it refreshes about every 15 seconds. While it is closed, it does not fetch anything. The network socket is opened for one request and closed again, so it does not sit on the game's network.
+Open Ultrahand, then NexStatus. The overlay lists the public player total and one row per game, busiest first. It refreshes about every 15 seconds while it is open and does not request data while it is closed. It does not show lobbies or account data.
 
 ## Build
 
@@ -60,22 +53,21 @@ Install [devkitPro](https://devkitpro.org/) with `switch-dev`, `switch-sdl2`, `s
 make
 ```
 
-That builds the app and the overlay, then writes `nexstatus.zip` in the repository root with the SD card layout above. `make clean` removes the build output and the zip.
+This builds the application and the overlay and writes `nexstatus.zip` at the repository root. `make clean` removes the build output and the zip.
 
-The version baked into the app is `APP_VERSION` in the root Makefile. A release tag `v1.0.0` is built with that version so the console can tell it is newer than what is installed.
+`APP_VERSION` in the root Makefile is the version stored in the application. A release tag must be newer than the installed version for the console to offer the update.
 
 ## License
 
-NexStatus is released under the GNU General Public License v2.0. See [LICENSE](LICENSE).
+GNU General Public License v2.0. See [LICENSE](LICENSE).
 
-The QR code generator in `app/source/qrcodegen.cpp` is copyright Project Nayuki and is used under the MIT license. The overlay UI uses [libtesla](https://github.com/WerWolv/libtesla), which includes Sean Barrett's stb_truetype (public domain).
+The overlay UI uses [libtesla](https://github.com/WerWolv/libtesla), which includes Sean Barrett's stb_truetype (public domain).
 
 ## Acknowledgements
 
 - [devkitPro](https://devkitpro.org/) and [libnx](https://github.com/switchbrew/libnx)
 - [SDL2](https://www.libsdl.org/) and SDL2_ttf
 - [libcurl](https://curl.se/) and [libjpeg-turbo](https://libjpeg-turbo.org/)
-- [Project Nayuki](https://www.nayuki.io/page/qr-code-generator-library), for the QR code generator
 - [WerWolv](https://github.com/WerWolv), for libtesla
 - [ppkantorski](https://github.com/ppkantorski/Ultrahand-Overlay), for Ultrahand
-- [Nextendo](https://nextendo.network), whose public status API this displays
+- [Nextendo](https://nextendo.network), for the status API

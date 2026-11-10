@@ -1,5 +1,6 @@
 #define CURL_STATICLIB
 #include "status.h"
+#include "log.hpp"
 
 #include <switch.h>
 #include <curl/curl.h>
@@ -41,9 +42,11 @@ long httpGet(const std::string& url, std::string& body, const std::atomic<bool>&
     });
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(&halt));
     long http = 0;
-    if (curl_easy_perform(curl) == CURLE_OK)
+    const CURLcode rc = curl_easy_perform(curl);
+    if (rc == CURLE_OK)
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
+    logHttp("GET", url, http, rc, body.size(), http == 200 ? nullptr : &body);
     return http;
 }
 
