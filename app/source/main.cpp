@@ -580,9 +580,9 @@ static void checkUpdate(std::string nroPath, std::atomic<bool>* stop, std::mutex
             phase->store(1);
             const std::string url = std::string("https://github.com/") + kUpdateRepo + "/releases/download/" + tag + "/nexstatus.zip";
             while (!stop->load() && phase->load() != 3) {
-                while (!stop->load() && !install->load())
+                while (!stop->load() && !install->load() && phase->load() != 0)
                     svcSleepThread(50'000'000);
-                if (stop->load()) break;
+                if (stop->load() || phase->load() == 0) break;
                 install->store(false);
                 got->store(0);
                 total->store(0);
@@ -968,7 +968,9 @@ int main(int argc, char** argv) {
         servers.hold(phaseNow != 0);
         if (phaseNow == 3 && (down & HidNpadButton_A))
             break;
-        if ((phaseNow == 1 || phaseNow == 4) && (down & HidNpadButton_A))
+        if (phaseNow == 4 && (down & HidNpadButton_B))
+            updatePhase.store(0);
+        else if ((phaseNow == 1 || phaseNow == 4) && (down & HidNpadButton_A))
             updateInstall = true;
         if (phaseNow != 2 && (down & HidNpadButton_Plus))
             break;
@@ -1500,7 +1502,7 @@ int main(int argc, char** argv) {
                     detail = "Press A to close.";
                 } else if (phaseNow == 4) {
                     headline = "Update failed";
-                    detail = "Press A to try again.";
+                    detail = "Press A to try again, B to cancel.";
                 }
                 setText(updateTitle, renderer, font, headline.c_str(), white);
                 setText(updateBody, renderer, hintFont, detail.c_str(), white);
