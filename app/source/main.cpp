@@ -1072,7 +1072,7 @@ int main(int argc, char** argv) {
                     focus = found >= 0 ? found : 0;
                     const int rows = (static_cast<int>(serverRows.size()) + 1) / 2;
                     const float content = rows > 0 ? rows * 122.f - 10.f : 0.f;
-                    const float view = static_cast<float>(barY - (16 + 84 + 12) - 24);
+                    const float view = static_cast<float>(barY - (16 + 84 + 20) - 24);
                     const float maxScroll = std::max(0.f, content - view);
                     if (serverScroll < 0) serverScroll = 0;
                     if (serverScroll > maxScroll) serverScroll = maxScroll;
@@ -1195,7 +1195,7 @@ int main(int argc, char** argv) {
                 moveTick = nowTick + wait;
                 if (focus >= 0) {
                     const int pitch = 112 + 10;
-                    const int listTop = 16 + 84 + 12;
+                    const int listTop = 16 + 84 + 20;
                     const int row = focus / 2;
                     const float top = static_cast<float>(row * pitch);
                     const float bottom = top + 112;
@@ -1360,7 +1360,7 @@ int main(int argc, char** argv) {
                 const int cardH = 112;
                 const int gap = 10;
                 const int margin = 16;
-                const int listTop = margin + 84 + 12;
+                const int listTop = margin + 84 + 20;
                 const int pitch = cardH + gap;
                 const int cardW = (ww - margin * 2 - gap) / 2;
                 const u64 nowList = armGetSystemTick();
@@ -1375,7 +1375,8 @@ int main(int argc, char** argv) {
                 const int off = scrollI - first * pitch;
                 const int rows = (barY - listTop) / pitch + 2;
                 const int iconSize = 80;
-                SDL_Rect listClip{0, listTop, ww, barY - listTop};
+                const int bannerBottom = margin + 84;
+                SDL_Rect listClip{0, bannerBottom, ww, barY - bannerBottom};
                 SDL_RenderSetClipRect(renderer, &listClip);
                 for (int r = 0; r < rows; ++r) {
                     for (int c = 0; c < 2; ++c) {
