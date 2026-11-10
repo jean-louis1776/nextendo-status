@@ -325,7 +325,7 @@ bool NextendoAuth::readProfile(const std::string& token) {
 bool NextendoAuth::loadProfile(const std::string& token) {
     if (!token.empty()) accessToken_ = token;
     const bool ok = readProfile(accessToken_) || (refresh() && readProfile(accessToken_));
-    sessionLog(ok ? "profile ok" : "profile failed");
+    if (!ok) sessionLog("profile failed");
     return ok;
 }
 

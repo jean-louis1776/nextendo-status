@@ -930,7 +930,6 @@ int main(int argc, char** argv) {
     auth.useTokens(config.access_token, config.refresh_token);
     curl_global_init(CURL_GLOBAL_DEFAULT);
     socketInitializeDefault();
-    sessionLog("start " APP_VERSION);
     bool batteryOn = R_SUCCEEDED(psmInitialize());
     int batteryPct = -1;
     Label batteryLabel;
@@ -1335,9 +1334,10 @@ int main(int argc, char** argv) {
                     } else if (bodyCopy.empty()) page.note = "Loading...";
                     else page = describeLive(bodyCopy, row.titleId, row.players);
                     buildLive(liveDraw, renderer, font, hintFont, creditFont, page, clip.w);
-                    sessionLogf("game %s count=%d players=%zu lobbies=%zu %s%s",
-                        row.titleId.c_str(), row.players, page.players.size(), page.lobbies.size(),
-                        page.headline.c_str(), page.note.empty() ? "" : page.note.c_str());
+                    if (failed || page.note.find("unavailable") != std::string::npos)
+                        sessionLogf("game %s count=%d players=%zu lobbies=%zu %s%s",
+                            row.titleId.c_str(), row.players, page.players.size(), page.lobbies.size(),
+                            page.headline.c_str(), page.note.empty() ? "" : page.note.c_str());
                 }
                 const int maxScroll = std::max(0, liveDraw.height - clip.h);
                 if (detailScroll > maxScroll) detailScroll = static_cast<float>(maxScroll);
@@ -1595,7 +1595,6 @@ int main(int argc, char** argv) {
     TTF_Quit();
     SDL_Quit();
     if (batteryOn) psmExit();
-    sessionLog("exit");
     sessionLogClose();
     socketExit();
     timeExit();

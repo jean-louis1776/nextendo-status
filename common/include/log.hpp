@@ -12,7 +12,8 @@
 #include <string>
 #include <sys/stat.h>
 
-// One file per launch: sdmc:/config/nexstatus/logs/YYYY-MM-DD_HH-MM-SS.log
+// A file is created only after a network or program error:
+// sdmc:/config/nexstatus/logs/YYYY-MM-DD_HH-MM-SS.log
 // ponytail: one mutex and fflush each line; no rotation until the card fills up.
 
 inline std::mutex& sessionLogMu() {
@@ -79,10 +80,11 @@ inline void sessionLogClose() {
 }
 
 inline void logHttp(const char* method, const std::string& url, long http, int curlCode, size_t bytes, const std::string* body) {
+    if (http >= 200 && http < 300) return;
+    if (curlCode == CURLE_ABORTED_BY_CALLBACK) return;
     std::string path = url;
     const auto query = path.find('?');
     if (query != std::string::npos) path.erase(query);
-    if (http == 200 && path.find("/api/game-icon/") != std::string::npos) return;
     char extra[140] = "";
     if (body && http != 200 && !body->empty() && body->size() < 300 && body->find("token") == std::string::npos) {
         std::string snip = body->substr(0, 80);
