@@ -21,12 +21,16 @@ Open NexStatus from the Homebrew Menu.
 
 The main screen lists game servers, busiest first. Each entry shows the game icon, name, server state, and player count. The header shows the number of players online, the number of active servers, and the time of the last count update. Counts refresh about every 15 seconds.
 
+![Server list](screenshots/servers.jpg)
+
 The account control is in the header.
 
 - Signed out: **A** opens sign-in. The console shows a code and a QR code. The phone completes sign-in. The console does not open a browser.
 - Signed in: **A** opens the account screen, which shows the username and friend code. **X** logs out.
 
 **A** on a server opens that game. Signed out, the page asks for sign-in. Signed in, it shows lobbies and players from Nextendo, including mode, room state, occupied slots, and a friend marker. The page loads on open and refreshes about every 15 seconds while it stays open. **B** returns to the list.
+
+![Lobby](screenshots/lobby.jpg)
 
 **(−)** on the main screen opens credits. It does nothing on other screens. **(+)** exits. The bottom right shows the version and the battery level.
 
