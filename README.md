@@ -53,7 +53,15 @@ The installer uses `nexstatus.zip` and replaces both `switch/nexstatus.nro` and 
 
 ## Android app
 
-The Android build shows the same public counts, opens a game page with lobbies and players after Nextendo sign-in, and can load an eShop-style about page with screenshots. Account, language (system / Russian / English), and about-app details live on the Account tab.
+The Android build shows the same public counts, opens a game page with lobbies and players after Nextendo sign-in, and can load an eShop-style about page with screenshots. Account, language (system / Russian / English), about-app details, and signed-in game history live on the Account tab.
+
+![Android games](screenshots/android/games.jpg)
+
+![Android lobby](screenshots/android/lobby.jpg)
+
+![Android about game](screenshots/android/about-game.jpg)
+
+![Android account](screenshots/android/account.png)
 
 ### Updates (Android)
 

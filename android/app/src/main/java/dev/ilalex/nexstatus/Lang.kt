@@ -206,7 +206,6 @@ private fun playHoursRu(seconds: Long): String {
     val hours = total / 3600
     val minutes = (total % 3600) / 60
     return when {
-        hours > 0 && minutes > 0 -> "$hours ч $minutes мин"
         hours > 0 -> "$hours ч"
         minutes > 0 -> "$minutes мин"
         else -> "0 мин"
@@ -218,9 +217,8 @@ private fun playHoursEn(seconds: Long): String {
     val hours = total / 3600
     val minutes = (total % 3600) / 60
     return when {
-        hours > 0 && minutes > 0 -> "$hours h $minutes min"
-        hours > 0 -> "$hours h"
-        minutes > 0 -> "$minutes min"
+        hours > 0 -> if (hours == 1L) "1 h" else "$hours h"
+        minutes > 0 -> if (minutes == 1L) "1 min" else "$minutes min"
         else -> "0 min"
     }
 }
