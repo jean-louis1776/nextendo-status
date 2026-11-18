@@ -5,6 +5,7 @@ build/
 local.properties
 *.apk
 *.apk.idsig
+android-version.txt
 *.iml
 captures/
 .DS_Store
