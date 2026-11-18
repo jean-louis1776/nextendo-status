@@ -674,6 +674,7 @@ private fun ScreenshotGallery(shots: List<String>, haze: HazeState, glass: Glass
 @Composable
 fun AccountScreen(
     session: Session,
+    history: HistoryState,
     copy: Copy,
     lang: LangChoice,
     haze: HazeState,
@@ -681,6 +682,7 @@ fun AccountScreen(
     onLanguage: (LangChoice) -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
+    onAllGames: () -> Unit,
 ) {
     var copied by remember { mutableIntStateOf(0) }
     LaunchedEffect(copied) {
@@ -760,6 +762,46 @@ fun AccountScreen(
                 }
             }
         }
+        if (session.signedIn) {
+            item {
+                Column(
+                    Modifier.fillMaxWidth().glass(haze, glass).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(copy.myGameHistory, fontWeight = FontWeight.SemiBold)
+                    when {
+                        history.loading && history.games.isEmpty() -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+                                Text(copy.loadingHistory, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+                            }
+                        }
+                        history.error.isNotEmpty() && history.games.isEmpty() -> {
+                            Text(history.error, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+                        }
+                        history.games.isEmpty() -> {
+                            Text(copy.historyEmpty, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+                        }
+                        else -> {
+                            HistoryRow(history.games.first(), copy, haze, glass, fast = true)
+                            Text(
+                                copy.allMyGames,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .tap(onAllGames)
+                                    .padding(vertical = 10.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+            }
+        }
         item {
             Column(Modifier.fillMaxWidth().glass(haze, glass).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(copy.language, fontWeight = FontWeight.SemiBold)
@@ -803,6 +845,103 @@ fun AccountScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+fun HistoryScreen(
+    history: HistoryState,
+    copy: Copy,
+    haze: HazeState,
+    glass: GlassStyle,
+    onBack: () -> Unit,
+) {
+    val listState = rememberLazyListState()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.rubberBand().fillMaxSize().navigationBarsPadding().hazeGlassContainer(mergeDistance = 0.dp, scrollState = listState),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                Row(Modifier.statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.glass(haze, glass).tap(onBack).padding(horizontal = 14.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BackIcon(Modifier.size(18.dp))
+                    }
+                    Text(
+                        copy.gameHistory,
+                        modifier = Modifier.padding(start = 12.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            when {
+                history.loading && history.games.isEmpty() -> {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth().glass(haze, glass).padding(18.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+                            Text(copy.loadingHistory)
+                        }
+                    }
+                }
+                history.error.isNotEmpty() && history.games.isEmpty() -> {
+                    item { GlassNote(history.error, haze, glass) }
+                }
+                history.games.isEmpty() -> {
+                    item { GlassNote(copy.historyEmpty, haze, glass) }
+                }
+                else -> {
+                    items(history.games.size, key = { history.games[it].titleId.ifEmpty { history.games[it].name } }) { index ->
+                        HistoryRow(history.games[index], copy, haze, glass, fast = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(
+    game: HistoryGame,
+    copy: Copy,
+    haze: HazeState,
+    glass: GlassStyle,
+    fast: Boolean,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .glass(haze, glass, fast)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AsyncImage(
+            model = iconRequest(game.titleId),
+            contentDescription = null,
+            modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)),
+            contentScale = ContentScale.Crop,
+        )
+        Text(
+            game.name,
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            copy.playHours(game.seconds),
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 

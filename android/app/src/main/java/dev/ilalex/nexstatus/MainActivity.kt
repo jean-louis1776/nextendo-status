@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     val browser by model.browser.collectAsStateWithLifecycle()
                     val tab by model.tab.collectAsStateWithLifecycle()
                     val langChoice by model.langChoice.collectAsStateWithLifecycle()
+                    val history by model.history.collectAsStateWithLifecycle()
                     val update by updates.state.collectAsStateWithLifecycle()
                     val copy = remember(langChoice) { copyFor(resolveLang(langChoice)) }
                     val context = LocalContext.current
@@ -123,7 +124,9 @@ class MainActivity : ComponentActivity() {
                                     targetState = route to tab,
                                     modifier = Modifier.fillMaxSize(),
                                     transitionSpec = {
-                                        val goingDeeper = targetState.first is Route.Game || targetState.first is Route.AboutGame
+                                        val goingDeeper = targetState.first is Route.Game ||
+                                            targetState.first is Route.AboutGame ||
+                                            targetState.first is Route.History
                                         val comingBack = initialState.first !is Route.Home && targetState.first is Route.Home
                                         when {
                                             goingDeeper && !comingBack ->
@@ -140,6 +143,7 @@ class MainActivity : ComponentActivity() {
                                             Route.Home -> "home-$t"
                                             is Route.Game -> "game-${r.game.titleId}"
                                             is Route.AboutGame -> "about-${r.game.titleId}"
+                                            Route.History -> "history"
                                         }
                                     },
                                     label = "screen",
@@ -149,6 +153,7 @@ class MainActivity : ComponentActivity() {
                                             MainTab.Games -> HomeScreen(home, copy, haze, glass, model::openGame)
                                             MainTab.Account -> AccountScreen(
                                                 session,
+                                                history,
                                                 copy,
                                                 langChoice,
                                                 haze,
@@ -156,6 +161,7 @@ class MainActivity : ComponentActivity() {
                                                 model::setLanguage,
                                                 { model.signIn(context) },
                                                 model::signOut,
+                                                model::openHistory,
                                             )
                                         }
                                         is Route.Game -> GameScreen(
@@ -172,6 +178,13 @@ class MainActivity : ComponentActivity() {
                                         is Route.AboutGame -> AboutGameScreen(
                                             current.game,
                                             gameInfo,
+                                            copy,
+                                            haze,
+                                            glass,
+                                            model::back,
+                                        )
+                                        Route.History -> HistoryScreen(
+                                            history,
                                             copy,
                                             haze,
                                             glass,

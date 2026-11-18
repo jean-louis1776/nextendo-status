@@ -58,6 +58,13 @@ data class Copy(
     val updateDownloading: String,
     val updateFailed: String,
     val updateRetry: String,
+    val myGameHistory: String,
+    val allMyGames: String,
+    val gameHistory: String,
+    val historyEmpty: String,
+    val historyFailed: String,
+    val loadingHistory: String,
+    val playHours: (Long) -> String,
 )
 
 fun resolveLang(choice: LangChoice): Boolean {
@@ -123,6 +130,13 @@ fun copyFor(russian: Boolean): Copy {
             updateDownloading = "Загрузка…",
             updateFailed = "Не удалось скачать обновление.",
             updateRetry = "Повторить",
+            myGameHistory = "Моя история игр",
+            allMyGames = "Все мои игры",
+            gameHistory = "История игр",
+            historyEmpty = "История пока пуста.",
+            historyFailed = "Не удалось загрузить историю.",
+            loadingHistory = "Загружаем историю…",
+            playHours = ::playHoursRu,
         )
     }
     return Copy(
@@ -177,7 +191,32 @@ fun copyFor(russian: Boolean): Copy {
         updateDownloading = "Downloading…",
         updateFailed = "Couldn't download the update.",
         updateRetry = "Retry",
+        myGameHistory = "My game history",
+        allMyGames = "All my games",
+        gameHistory = "Game history",
+        historyEmpty = "No games played yet.",
+        historyFailed = "Couldn't load history.",
+        loadingHistory = "Loading history…",
+        playHours = ::playHoursEn,
     )
+}
+
+private fun playHoursRu(seconds: Long): String {
+    val hours = seconds / 3600.0
+    return when {
+        hours < 0.1 -> "<0.1 ч"
+        hours < 10 -> String.format(Locale.US, "%.1f ч", hours)
+        else -> String.format(Locale.US, "%.0f ч", hours)
+    }
+}
+
+private fun playHoursEn(seconds: Long): String {
+    val hours = seconds / 3600.0
+    return when {
+        hours < 0.1 -> "<0.1 h"
+        hours < 10 -> String.format(Locale.US, "%.1f h", hours)
+        else -> String.format(Locale.US, "%.0f h", hours)
+    }
 }
 
 private fun lobbyStateRu(state: String) = when (state) {

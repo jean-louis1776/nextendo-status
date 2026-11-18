@@ -78,10 +78,24 @@ data class Session(
     val signedIn: Boolean get() = authed || name.isNotEmpty()
 }
 
+data class HistoryGame(
+    val titleId: String,
+    val name: String,
+    val seconds: Long,
+    val lastPlayed: String = "",
+)
+
+data class HistoryState(
+    val games: List<HistoryGame> = emptyList(),
+    val loading: Boolean = false,
+    val error: String = "",
+)
+
 sealed interface Route {
     data object Home : Route
     data class Game(val game: dev.ilalex.nexstatus.Game) : Route
     data class AboutGame(val game: dev.ilalex.nexstatus.Game) : Route
+    data object History : Route
 }
 
 class AppModel(app: Application) : AndroidViewModel(app) {
@@ -120,6 +134,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val tab: StateFlow<MainTab> = _tab
     private val _langChoice = MutableStateFlow(LangChoice.System)
     val langChoice: StateFlow<LangChoice> = _langChoice
+    private val _history = MutableStateFlow(HistoryState())
+    val history: StateFlow<HistoryState> = _history
 
     val russian: Boolean get() = resolveLang(_langChoice.value)
     val copy: Copy get() = copyFor(russian)
@@ -142,8 +158,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 avatar = prefs[avatarKey].orEmpty(),
                 authed = access.isNotEmpty(),
             )
-            if (access.isNotEmpty()) loadProfile()
-            else if (pendingState.isNotEmpty()) recoverSignIn()
+            if (access.isNotEmpty()) {
+                loadProfile()
+                loadHistory()
+            } else if (pendingState.isNotEmpty()) recoverSignIn()
         }
         viewModelScope.launch {
             while (isActive) {
@@ -155,14 +173,15 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun setTab(tab: MainTab) {
         _tab.value = tab
-        if (tab == MainTab.Games || tab == MainTab.Account) {
-            if (_route.value !is Route.Home) {
-                pageJob?.cancel()
-                infoJob?.cancel()
-                _route.value = Route.Home
-                _page.value = null
-                _gameInfo.value = GameInfo()
-            }
+        if (_route.value !is Route.Home) {
+            pageJob?.cancel()
+            infoJob?.cancel()
+            _route.value = Route.Home
+            _page.value = null
+            _gameInfo.value = GameInfo()
+        }
+        if (tab == MainTab.Account && _session.value.signedIn && _history.value.games.isEmpty()) {
+            viewModelScope.launch { loadHistory() }
         }
     }
 
@@ -179,8 +198,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             when (val current = _route.value) {
                 is Route.AboutGame -> openAboutGame(current.game)
                 is Route.Game -> openGame(current.game)
-                Route.Home -> Unit
+                Route.History, Route.Home -> Unit
             }
+        }
+    }
+
+    fun openHistory() {
+        pageJob?.cancel()
+        infoJob?.cancel()
+        _route.value = Route.History
+        if (_history.value.games.isEmpty()) {
+            viewModelScope.launch { loadHistory() }
         }
     }
 
@@ -217,6 +245,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             is Route.Game -> {
                 pageJob?.cancel()
                 _page.value = null
+                _route.value = Route.Home
+            }
+            Route.History -> {
+                _tab.value = MainTab.Account
                 _route.value = Route.Home
             }
             Route.Home -> Unit
@@ -271,6 +303,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         pendingVerifier = ""
         _session.value = Session()
         _page.value = null
+        _history.value = HistoryState()
+        if (_route.value is Route.History) _route.value = Route.Home
         viewModelScope.launch {
             getApplication<Application>().store.edit {
                 it.remove(accessKey)
@@ -281,6 +315,44 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 it.remove(pendingStateKey)
                 it.remove(pendingVerifierKey)
             }
+        }
+    }
+
+    private suspend fun loadHistory() {
+        if (access.isEmpty() && refresh.isEmpty()) {
+            _history.value = HistoryState()
+            return
+        }
+        _history.update { it.copy(loading = it.games.isEmpty(), error = "") }
+        val games = withContext(Dispatchers.IO) {
+            gate.withLock {
+                val response = authed("https://nextendo.network/api/history")
+                if (response?.code != 200 || response.body.isEmpty()) return@withLock null
+                runCatching {
+                    val array = JSONObject(response.body).optJSONArray("history") ?: JSONArray()
+                    buildList {
+                        for (i in 0 until array.length()) {
+                            val item = array.optJSONObject(i) ?: continue
+                            val titleId = item.optString("title_id")
+                            val name = item.optString("name")
+                            if (titleId.isEmpty() && name.isEmpty()) continue
+                            add(
+                                HistoryGame(
+                                    titleId = titleId,
+                                    name = name.ifEmpty { titleId },
+                                    seconds = item.optLong("seconds"),
+                                    lastPlayed = item.optString("last_played"),
+                                ),
+                            )
+                        }
+                    }
+                }.getOrNull()
+            }
+        }
+        _history.value = if (games == null) {
+            HistoryState(error = copy.historyFailed, loading = false)
+        } else {
+            HistoryState(games = games, loading = false)
         }
     }
 
@@ -514,6 +586,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (_session.value.name.isEmpty()) {
                 _session.update { it.copy(authed = true, status = copy.profilePartial) }
             }
+            loadHistory()
             refreshOpenGame()
             return true
         } finally {
