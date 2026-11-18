@@ -26,20 +26,28 @@ jobs:
 
       - name: Install libraries
         run: |
-          # XferCommand is only valid in [options]. curl from GitHub Actions is
-          # still answered with 403; devkitPro's own workaround is wget with this agent.
-          if ! command -v wget >/dev/null; then
-            apt-get update && apt-get install -y wget
+          # pkg.devkitpro.org often returns 403 to Actions. Prefer curl with a
+          # normal browser UA; fall back to wget + dkp-pacman UA.
+          if ! command -v curl >/dev/null || ! command -v wget >/dev/null; then
+            apt-get update && apt-get install -y curl wget
           fi
-          sed -i '/^\[options\]/a XferCommand = /usr/bin/wget -U "dkp-pacman" --passive-ftp -c -O %o %u' /opt/devkitpro/pacman/etc/pacman.conf
-          rm -f /opt/devkitpro/pacman/var/lib/pacman/sync/dkp-* /var/lib/pacman/sync/dkp-*
+          conf=/opt/devkitpro/pacman/etc/pacman.conf
+          pkgs='switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib'
           ok=0
-          for _ in 1 2 3 4 5; do
-            if dkp-pacman -Syu --noconfirm switch-sdl2 switch-sdl2_ttf switch-libjpeg-turbo switch-curl switch-mbedtls switch-mesa switch-bzip2 switch-libpng switch-freetype switch-zlib; then
-              ok=1
-              break
-            fi
-            sleep 8
+          for xfer in \
+            '/usr/bin/curl -A "Mozilla/5.0" -fL --retry 5 --retry-delay 2 -o %o %u' \
+            '/usr/bin/wget -U "dkp-pacman" --passive-ftp -c -O %o %u'
+          do
+            sed -i '/^XferCommand/d' "$conf"
+            sed -i "/^\[options\]/a XferCommand = $xfer" "$conf"
+            rm -f /opt/devkitpro/pacman/var/lib/pacman/sync/dkp-* /var/lib/pacman/sync/dkp-*
+            for n in 1 2 3 4 5 6; do
+              if dkp-pacman -Syu --noconfirm $pkgs; then
+                ok=1
+                break 2
+              fi
+              sleep $((n * 4))
+            done
           done
           test "$ok" = 1
 
