@@ -683,6 +683,7 @@ fun AccountScreen(
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
     onAllGames: () -> Unit,
+    onOpenGame: (HistoryGame) -> Unit,
 ) {
     var copied by remember { mutableIntStateOf(0) }
     LaunchedEffect(copied) {
@@ -786,7 +787,9 @@ fun AccountScreen(
                             Text(copy.historyEmpty, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
                         }
                         else -> {
-                            HistoryRow(history.games.first(), copy, haze, glass, fast = true)
+                            history.games.take(3).forEach { game ->
+                                HistoryRow(game, copy, haze, glass, fast = true) { onOpenGame(game) }
+                            }
                             Text(
                                 copy.allMyGames,
                                 modifier = Modifier
@@ -855,6 +858,7 @@ fun HistoryScreen(
     haze: HazeState,
     glass: GlassStyle,
     onBack: () -> Unit,
+    onOpenGame: (HistoryGame) -> Unit,
 ) {
     val listState = rememberLazyListState()
     Box(Modifier.fillMaxSize()) {
@@ -901,7 +905,8 @@ fun HistoryScreen(
                 }
                 else -> {
                     items(history.games.size, key = { history.games[it].titleId.ifEmpty { history.games[it].name } }) { index ->
-                        HistoryRow(history.games[index], copy, haze, glass, fast = true)
+                        val game = history.games[index]
+                        HistoryRow(game, copy, haze, glass, fast = true) { onOpenGame(game) }
                     }
                 }
             }
@@ -916,11 +921,13 @@ private fun HistoryRow(
     haze: HazeState,
     glass: GlassStyle,
     fast: Boolean,
+    onClick: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .glass(haze, glass, fast)
+            .then(if (onClick != null) Modifier.tap(onClick) else Modifier)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

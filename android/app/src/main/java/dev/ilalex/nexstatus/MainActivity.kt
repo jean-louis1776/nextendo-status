@@ -162,7 +162,9 @@ class MainActivity : ComponentActivity() {
                                                 { model.signIn(context) },
                                                 model::signOut,
                                                 model::openHistory,
-                                            )
+                                            ) { game ->
+                                                model.openAboutGame(game.asGame(), AboutBack.Account)
+                                            }
                                         }
                                         is Route.Game -> GameScreen(
                                             current.game,
@@ -189,7 +191,9 @@ class MainActivity : ComponentActivity() {
                                             haze,
                                             glass,
                                             model::back,
-                                        )
+                                        ) { game ->
+                                            model.openAboutGame(game.asGame(), AboutBack.History)
+                                        }
                                     }
                                 }
                             }

@@ -83,7 +83,9 @@ data class HistoryGame(
     val name: String,
     val seconds: Long,
     val lastPlayed: String = "",
-)
+) {
+    fun asGame() = Game(name = name, titleId = titleId, players = 0)
+}
 
 data class HistoryState(
     val games: List<HistoryGame> = emptyList(),
@@ -91,10 +93,12 @@ data class HistoryState(
     val error: String = "",
 )
 
+enum class AboutBack { Lobby, Account, History }
+
 sealed interface Route {
     data object Home : Route
     data class Game(val game: dev.ilalex.nexstatus.Game) : Route
-    data class AboutGame(val game: dev.ilalex.nexstatus.Game) : Route
+    data class AboutGame(val game: dev.ilalex.nexstatus.Game, val backTo: AboutBack = AboutBack.Lobby) : Route
     data object History : Route
 }
 
@@ -196,7 +200,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             when (val current = _route.value) {
-                is Route.AboutGame -> openAboutGame(current.game)
+                is Route.AboutGame -> openAboutGame(current.game, current.backTo)
                 is Route.Game -> openGame(current.game)
                 Route.History, Route.Home -> Unit
             }
@@ -225,11 +229,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun openAboutGame(game: Game) {
+    fun openAboutGame(game: Game, backTo: AboutBack = AboutBack.Lobby) {
         pageJob?.cancel()
         infoJob?.cancel()
         _gameInfo.value = GameInfo(loading = true)
-        _route.value = Route.AboutGame(game)
+        _route.value = Route.AboutGame(game, backTo)
         infoJob = viewModelScope.launch {
             _gameInfo.value = loadGameInfo(game)
         }
@@ -240,7 +244,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             is Route.AboutGame -> {
                 infoJob?.cancel()
                 _gameInfo.value = GameInfo()
-                openGame(current.game)
+                when (current.backTo) {
+                    AboutBack.Lobby -> openGame(current.game)
+                    AboutBack.Account -> {
+                        _tab.value = MainTab.Account
+                        _route.value = Route.Home
+                    }
+                    AboutBack.History -> {
+                        _tab.value = MainTab.Account
+                        _route.value = Route.History
+                    }
+                }
             }
             is Route.Game -> {
                 pageJob?.cancel()
