@@ -202,20 +202,26 @@ fun copyFor(russian: Boolean): Copy {
 }
 
 private fun playHoursRu(seconds: Long): String {
-    val hours = seconds / 3600.0
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
     return when {
-        hours < 0.1 -> "<0.1 ч"
-        hours < 10 -> String.format(Locale.US, "%.1f ч", hours)
-        else -> String.format(Locale.US, "%.0f ч", hours)
+        hours > 0 && minutes > 0 -> "$hours ч $minutes мин"
+        hours > 0 -> "$hours ч"
+        minutes > 0 -> "$minutes мин"
+        else -> "0 мин"
     }
 }
 
 private fun playHoursEn(seconds: Long): String {
-    val hours = seconds / 3600.0
+    val total = seconds.coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
     return when {
-        hours < 0.1 -> "<0.1 h"
-        hours < 10 -> String.format(Locale.US, "%.1f h", hours)
-        else -> String.format(Locale.US, "%.0f h", hours)
+        hours > 0 && minutes > 0 -> "$hours h $minutes min"
+        hours > 0 -> "$hours h"
+        minutes > 0 -> "$minutes min"
+        else -> "0 min"
     }
 }
 
