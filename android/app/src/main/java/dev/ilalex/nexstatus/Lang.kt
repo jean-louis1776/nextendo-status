@@ -15,9 +15,25 @@ data class Copy(
     val gamesWord: (Int) -> String,
     val lobbies: (Int) -> String,
     val players: (Int) -> String,
+    val lobbyTitle: (Int) -> String,
+    val lobbyLabel: (Int) -> String,
+    val lobbyState: (String) -> String,
+    val markYou: String,
+    val markFriend: String,
+    val playersOnlineNote: (Int) -> String,
+    val listUnavailable: String,
+    val loadLobbiesFailed: String,
+    val nobodyHere: String,
+    val roomsUnavailable: String,
+    val onlineNotInRoom: String,
+    val loadListFailed: String,
     val signIn: String,
     val signOut: String,
     val waitingBrowser: String,
+    val signInFailed: String,
+    val signInOpenFailed: String,
+    val signInTimedOut: String,
+    val profilePartial: String,
     val signInToSee: String,
     val aboutGame: String,
     val aboutApp: String,
@@ -34,6 +50,7 @@ data class Copy(
     val loadingGameInfo: String,
     val gameInfoFailed: String,
     val account: String,
+    val close: String,
     val updateTitle: String,
     val updateBody: (String) -> String,
     val updateNow: String,
@@ -63,9 +80,25 @@ fun copyFor(russian: Boolean): Copy {
             gamesWord = ::gamesWordRu,
             lobbies = { n -> "Лобби ($n)" },
             players = { n -> "Игроки ($n)" },
+            lobbyTitle = { n -> "Лобби $n" },
+            lobbyLabel = { n -> "Лобби $n" },
+            lobbyState = ::lobbyStateRu,
+            markYou = "Вы",
+            markFriend = "Друг",
+            playersOnlineNote = { n -> "$n ${playersWordRu(n)} онлайн." },
+            listUnavailable = "Список игроков и лобби временно недоступен.",
+            loadLobbiesFailed = "Не удалось загрузить лобби.",
+            nobodyHere = "Сейчас никого нет.",
+            roomsUnavailable = "Игроки онлайн. Комнаты временно недоступны.",
+            onlineNotInRoom = "Эти игроки онлайн, но ещё не в комнате.",
+            loadListFailed = "Не удалось загрузить список.",
             signIn = "Войти",
             signOut = "Выйти",
             waitingBrowser = "Ждём браузер…",
+            signInFailed = "Не удалось войти",
+            signInOpenFailed = "Не удалось открыть вход",
+            signInTimedOut = "Время входа истекло",
+            profilePartial = "Вход есть, профиль не загрузился.",
             signInToSee = "Войдите, чтобы увидеть лобби и игроков.",
             aboutGame = "Об игре",
             aboutApp = "О приложении",
@@ -82,6 +115,7 @@ fun copyFor(russian: Boolean): Copy {
             loadingGameInfo = "Загружаем описание…",
             gameInfoFailed = "Не удалось загрузить описание.",
             account = "Аккаунт",
+            close = "Закрыть",
             updateTitle = "Доступно обновление",
             updateBody = { "NexStatus $it" },
             updateNow = "Обновить",
@@ -100,9 +134,25 @@ fun copyFor(russian: Boolean): Copy {
         gamesWord = { n -> if (n == 1) "game" else "games" },
         lobbies = { n -> "Lobbies ($n)" },
         players = { n -> "Players ($n)" },
+        lobbyTitle = { n -> "Lobby $n" },
+        lobbyLabel = { n -> "Lobby $n" },
+        lobbyState = ::lobbyStateEn,
+        markYou = "You",
+        markFriend = "Friend",
+        playersOnlineNote = { n -> "$n ${if (n == 1) "player" else "players"} online." },
+        listUnavailable = "Player list and lobbies are temporarily unavailable.",
+        loadLobbiesFailed = "Couldn't load lobbies.",
+        nobodyHere = "Nobody here right now.",
+        roomsUnavailable = "Players are online. Rooms are temporarily unavailable.",
+        onlineNotInRoom = "These players are online, but not in a room yet.",
+        loadListFailed = "Couldn't load the list.",
         signIn = "Sign in",
         signOut = "Sign out",
         waitingBrowser = "Waiting for browser…",
+        signInFailed = "Couldn't sign in",
+        signInOpenFailed = "Couldn't open sign-in",
+        signInTimedOut = "Sign-in timed out",
+        profilePartial = "Signed in, but the profile didn't load.",
         signInToSee = "Sign in to see lobbies and players.",
         aboutGame = "About game",
         aboutApp = "About",
@@ -119,6 +169,7 @@ fun copyFor(russian: Boolean): Copy {
         loadingGameInfo = "Loading description…",
         gameInfoFailed = "Couldn't load description.",
         account = "Account",
+        close = "Close",
         updateTitle = "Update available",
         updateBody = { "NexStatus $it" },
         updateNow = "Update",
@@ -127,6 +178,22 @@ fun copyFor(russian: Boolean): Copy {
         updateFailed = "Couldn't download the update.",
         updateRetry = "Retry",
     )
+}
+
+private fun lobbyStateRu(state: String) = when (state) {
+    "searching" -> "Поиск"
+    "matched" -> "В матче"
+    "full" -> "Полно"
+    "open" -> "Открыто"
+    else -> state
+}
+
+private fun lobbyStateEn(state: String) = when (state) {
+    "searching" -> "Searching"
+    "matched" -> "In match"
+    "full" -> "Full"
+    "open" -> "Open"
+    else -> state
 }
 
 private fun playersWordRu(count: Int) = when {
@@ -139,4 +206,9 @@ private fun gamesWordRu(count: Int) = when {
     count % 10 == 1 && count % 100 != 11 -> "игра"
     count % 10 in 2..4 && count % 100 !in 12..14 -> "игры"
     else -> "игр"
+}
+
+fun cleanText(value: String?): String {
+    val text = value?.trim().orEmpty()
+    return if (text.isEmpty() || text.equals("null", ignoreCase = true) || text.equals("undefined", ignoreCase = true)) "" else text
 }

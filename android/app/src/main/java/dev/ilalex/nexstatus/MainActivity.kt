@@ -202,7 +202,7 @@ class MainActivity : ComponentActivity() {
                                 enter = fadeIn(tween(220)),
                                 exit = fadeOut(tween(160)),
                             ) {
-                                browserPage?.let { SignInWeb(it, model::onBrowserCallback, model::cancelBrowser) }
+                                browserPage?.let { SignInWeb(it, copy, model::onBrowserCallback, model::cancelBrowser) }
                             }
                         }
                     }

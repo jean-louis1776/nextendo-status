@@ -619,12 +619,16 @@ fun AboutGameScreen(
                         )
                     }
                 }
-                item {
-                    Text(
-                        info.description.ifEmpty { copy.noDescription },
-                        Modifier.fillMaxWidth().glass(haze, glass).padding(18.dp),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
-                    )
+                if (info.description.isNotEmpty()) {
+                    item {
+                        Text(
+                            info.description,
+                            Modifier.fillMaxWidth().glass(haze, glass).padding(18.dp),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f),
+                        )
+                    }
+                } else if (info.screenshots.isEmpty() && info.intro.isEmpty()) {
+                    item { GlassNote(copy.noDescription, haze, glass) }
                 }
             }
         }
@@ -1089,7 +1093,7 @@ private fun UpdateBar(progress: Float) {
 }
 
 @Composable
-fun SignInWeb(url: String, onResult: (String) -> Unit, onClose: () -> Unit) {
+fun SignInWeb(url: String, copy: Copy, onResult: (String) -> Unit, onClose: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color(0xFF111113))) {
         key(url) {
             AndroidView(
@@ -1134,7 +1138,7 @@ fun SignInWeb(url: String, onResult: (String) -> Unit, onClose: () -> Unit) {
             )
         }
         Text(
-            "Закрыть",
+            copy.close,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()

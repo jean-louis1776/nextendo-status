@@ -176,8 +176,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     LangChoice.System -> "system"
                 }
             }
-            val current = _route.value
-            if (current is Route.AboutGame) openAboutGame(current.game)
+            when (val current = _route.value) {
+                is Route.AboutGame -> openAboutGame(current.game)
+                is Route.Game -> openGame(current.game)
+                Route.Home -> Unit
+            }
         }
     }
 
@@ -255,7 +258,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (id == attempt && access.isEmpty()) _session.update { it.copy(status = "Не удалось войти") }
+                if (id == attempt && access.isEmpty()) _session.update { it.copy(status = copy.signInFailed) }
             }
         }
     }
@@ -288,7 +291,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (next == null) {
                 current.copy(
                     loading = false,
-                    error = if (current.games.isEmpty()) "Не удалось загрузить список." else "",
+                    error = if (current.games.isEmpty()) copy.loadListFailed else "",
                 )
             } else {
                 HomeState(
@@ -371,9 +374,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             GameInfo(
-                title = json.optString("name").ifEmpty { game.name },
-                intro = json.optString("intro"),
-                description = json.optString("description"),
+                title = cleanText(json.optString("name")).ifEmpty { game.name },
+                intro = cleanText(json.optString("intro")),
+                description = cleanText(json.optString("description")),
                 screenshots = shots,
                 loading = false,
             )
@@ -396,13 +399,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
         if (body.isEmpty()) {
             return GamePage(
-                if (game.players > 0) "${playersLabel(game.players)} Список игроков и лобби временно недоступен."
-                else "Не удалось загрузить лобби.",
+                if (game.players > 0) "${copy.playersOnlineNote(game.players)} ${copy.listUnavailable}"
+                else copy.loadLobbiesFailed,
                 emptyList(),
                 emptyList(),
             )
         }
-        return describe(body, game)
+        return describe(body, game, copy)
     }
 
     private suspend fun signInBrowser(context: Context, id: Int): Boolean {
@@ -422,7 +425,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             ).code == 200
         }
         if (!posted) {
-            if (id == attempt) _session.update { it.copy(status = "Не удалось открыть вход") }
+            if (id == attempt) _session.update { it.copy(status = copy.signInOpenFailed) }
             return false
         }
         if (id != attempt) return false
@@ -443,7 +446,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (id != attempt) return false
         withContext(Dispatchers.Main) { _browser.value = null }
         clearPending()
-        _session.update { it.copy(status = "Время входа истекло") }
+        _session.update { it.copy(status = copy.signInTimedOut) }
         return false
     }
 
@@ -453,7 +456,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val state = uri.getQueryParameter("state").orEmpty()
         _browser.value = null
         if (state != pendingState || code.length < 8) {
-            if (access.isEmpty()) _session.update { it.copy(status = "Не удалось войти") }
+            if (access.isEmpty()) _session.update { it.copy(status = copy.signInFailed) }
             return
         }
         val id = attempt
@@ -495,7 +498,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (id != attempt) return false
             if (tokens == null) {
                 clearPending()
-                _session.update { it.copy(status = "Не удалось войти") }
+                _session.update { it.copy(status = copy.signInFailed) }
                 return false
             }
             access = tokens.first
@@ -509,7 +512,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             _session.update { it.copy(authed = true, status = "") }
             loadProfile()
             if (_session.value.name.isEmpty()) {
-                _session.update { it.copy(authed = true, status = "Вход есть, профиль не загрузился.") }
+                _session.update { it.copy(authed = true, status = copy.profilePartial) }
             }
             refreshOpenGame()
             return true
@@ -647,22 +650,22 @@ private fun fetchGames(): List<Game> {
     return games.sortedWith(compareByDescending<Game> { it.players }.thenBy { it.name })
 }
 
-private fun describe(body: String, game: Game): GamePage {
+private fun describe(body: String, game: Game, copy: Copy): GamePage {
     val slice = extractGame(body, game.titleId)
     if (slice == null) {
         return GamePage(
-            if (game.players > 0) "${playersLabel(game.players)} Список игроков и лобби временно недоступен."
-            else "Сейчас никого нет.",
+            if (game.players > 0) "${copy.playersOnlineNote(game.players)} ${copy.listUnavailable}"
+            else copy.nobodyHere,
             emptyList(),
             emptyList(),
         )
     }
     val json = JSONObject(slice)
-    val players = people(json.optJSONArray("players"), withLobby = true)
+    val players = people(json.optJSONArray("players"), withLobby = true, copy)
     if (players.isEmpty()) {
         return GamePage(
-            if (game.players > 0) "${playersLabel(game.players)} Список игроков и лобби временно недоступен."
-            else "Сейчас никого нет.",
+            if (game.players > 0) "${copy.playersOnlineNote(game.players)} ${copy.listUnavailable}"
+            else copy.nobodyHere,
             emptyList(),
             emptyList(),
         )
@@ -681,40 +684,24 @@ private fun describe(body: String, game: Game): GamePage {
             }
             add(
                 Lobby(
-                    title = "Лобби ${i + 1}",
-                    mode = item.optString("mode"),
-                    state = lobbyState(item.optString("state")),
+                    title = copy.lobbyTitle(i + 1),
+                    mode = cleanText(item.optString("mode")),
+                    state = copy.lobbyState(item.optString("state")),
                     places = places,
-                    members = people(item.optJSONArray("players"), withLobby = false),
+                    members = people(item.optJSONArray("players"), withLobby = false, copy),
                 ),
             )
         }
     }
     val note = when {
-        roomsHidden -> "Игроки онлайн. Комнаты временно недоступны."
-        lobbies.isEmpty() -> "Эти игроки онлайн, но ещё не в комнате."
+        roomsHidden -> copy.roomsUnavailable
+        lobbies.isEmpty() -> copy.onlineNotInRoom
         else -> ""
     }
     return GamePage(note, lobbies, players)
 }
 
-private fun playersWord(count: Int) = when {
-    count % 10 == 1 && count % 100 != 11 -> "игрок"
-    count % 10 in 2..4 && count % 100 !in 12..14 -> "игрока"
-    else -> "игроков"
-}
-
-private fun playersLabel(count: Int) = "$count ${playersWord(count)} онлайн."
-
-private fun lobbyState(state: String) = when (state) {
-    "searching" -> "Поиск"
-    "matched" -> "В матче"
-    "full" -> "Полно"
-    "open" -> "Открыто"
-    else -> state
-}
-
-private fun people(array: JSONArray?, withLobby: Boolean): List<Person> {
+private fun people(array: JSONArray?, withLobby: Boolean, copy: Copy): List<Person> {
     if (array == null) return emptyList()
     return buildList {
         for (i in 0 until array.length()) {
@@ -722,13 +709,13 @@ private fun people(array: JSONArray?, withLobby: Boolean): List<Person> {
             val name = item.optString("name")
             if (name.isEmpty()) continue
             val mark = when {
-                item.optBoolean("you") -> "Вы"
-                item.optBoolean("friend") -> "Друг"
+                item.optBoolean("you") -> copy.markYou
+                item.optBoolean("friend") -> copy.markFriend
                 else -> ""
             }
             val extra = buildList {
-                if (withLobby && item.has("lobby") && !item.isNull("lobby")) add("Лобби ${item.optInt("lobby") + 1}")
-                val activity = item.optString("activity")
+                if (withLobby && item.has("lobby") && !item.isNull("lobby")) add(copy.lobbyLabel(item.optInt("lobby") + 1))
+                val activity = cleanText(item.optString("activity"))
                 if (activity.isNotEmpty()) add(activity)
             }.joinToString("  ")
             add(Person(name, mark, extra))
