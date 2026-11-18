@@ -73,7 +73,22 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-37 build-tools;36.0.0
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+
+      # sdkmanager does not publish platforms;android-37 on runners yet, but Compose/haze require compileSdk 37.
+      - name: Provide android-37 platform
+        run: |
+          set -e
+          SRC="${ANDROID_HOME}/platforms/android-36"
+          DST="${ANDROID_HOME}/platforms/android-37"
+          test -d "$SRC"
+          rm -rf "$DST"
+          cp -a "$SRC" "$DST"
+          sed -i 's/AndroidVersion.ApiLevel=36/AndroidVersion.ApiLevel=37/' "$DST/source.properties"
+          if [ -f "$DST/package.xml" ]; then
+            sed -i 's/android-36/android-37/g; s/>36</>37</g' "$DST/package.xml" || true
+          fi
+          grep -n "ApiLevel" "$DST/source.properties"
 
       - name: Build APK
         working-directory: android
@@ -104,19 +119,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: nexstatus-switch
+          path: dist
 
       - uses: actions/download-artifact@v4
         with:
           name: nexstatus-android
+          path: dist
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
           files: |
-            nexstatus.zip
-            nexstatus.nro
-            nexstatus.apk
-            android-version.txt
+            dist/nexstatus.zip
+            dist/nexstatus.nro
+            dist/nexstatus.apk
+            dist/android-version.txt
           body: |
             ## Switch
             Extract `nexstatus.zip` at the root of the SD card.
@@ -124,3 +141,4 @@ jobs:
             ## Android
             Install `nexstatus.apk`. The Android app shows the same public server counts and, after sign-in, lobbies and players. It checks GitHub for a newer APK on launch.
           generate_release_notes: true
+          fail_on_unmatched_files: false
