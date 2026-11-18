@@ -16,10 +16,22 @@ android {
         versionName = "1.1.6"
     }
 
+    // Stable release key so GitHub OTA APKs can update each other.
+    // CI debug.keystore changes every runner and causes install conflicts.
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("signing/nexstatus.keystore")
+            storePassword = "nexstatus"
+            keyAlias = "nexstatus"
+            keyPassword = "nexstatus"
+            storeType = "PKCS12"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
