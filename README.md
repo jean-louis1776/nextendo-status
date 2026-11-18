@@ -1,12 +1,14 @@
 # NexStatus
 
-NexStatus is a Nintendo Switch homebrew application for [Nextendo](https://nextendo.network) server status. It lists game servers, player counts, and, after sign-in, lobbies and players. An [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay shows the same public counts.
+NexStatus is a Nintendo Switch homebrew application and an unofficial Android companion for [Nextendo](https://nextendo.network) server status. It lists game servers, player counts, and, after sign-in, lobbies and players. An [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay shows the same public counts on the console.
 
 NexStatus is not affiliated with Nintendo or Nextendo.
 
 ## Install
 
-The release is one zip. Extract it at the root of the SD card.
+### Switch
+
+The Switch release is one zip. Extract it at the root of the SD card.
 
 | Path | Contents |
 | --- | --- |
@@ -15,7 +17,11 @@ The release is one zip. Extract it at the root of the SD card.
 
 The Homebrew Menu is required for the application. Ultrahand is required for the overlay. Overlay files must be in `sdmc:/switch/.overlays/`.
 
-## Application
+### Android
+
+Install `nexstatus.apk` from the GitHub release. The phone app is personal / unofficial and is not on Google Play. Allow installs from the browser or file manager when prompted.
+
+## Application (Switch)
 
 Open NexStatus from the Homebrew Menu.
 
@@ -34,7 +40,7 @@ The account control is in the header.
 
 **(−)** on the main screen opens credits. It does nothing on other screens. **(+)** exits. The bottom right shows the version and the battery level.
 
-### Updates
+### Updates (Switch)
 
 On launch the application checks GitHub for a newer release. If one is available, an update dialog is shown.
 
@@ -45,11 +51,21 @@ On launch the application checks GitHub for a newer release. If one is available
 
 The installer uses `nexstatus.zip` and replaces both `switch/nexstatus.nro` and `switch/.overlays/nexstatus.ovl`.
 
+## Android app
+
+The Android build shows the same public counts, opens a game page with lobbies and players after Nextendo sign-in, and can load an eShop-style about page with screenshots. Account, language (system / Russian / English), and about-app details live on the Account tab.
+
+### Updates (Android)
+
+On launch the app checks GitHub for a newer Android build (`android-version.txt` + `nexstatus.apk`). If one is available, a dialog offers **Update** or **Later**. Later dismisses it until the next cold start. Update downloads the APK with a progress bar, percent, and speed, then opens the system install screen.
+
 ## Overlay
 
 Open Ultrahand, then NexStatus. The overlay lists the public player total and one row per game, busiest first. It refreshes about every 15 seconds while it is open and does not request data while it is closed. It does not show lobbies or account data.
 
 ## Build
+
+### Switch
 
 Install [devkitPro](https://devkitpro.org/) with `switch-dev`, `switch-sdl2`, `switch-sdl2_ttf`, `switch-libjpeg-turbo`, `switch-curl`, and `switch-mbedtls`. From the repository root:
 
@@ -59,7 +75,17 @@ make
 
 This builds the application and the overlay and writes `nexstatus.zip` at the repository root. `make clean` removes the build output and the zip.
 
-`APP_VERSION` in the root Makefile is the version stored in the application. A release tag must be newer than the installed version for the console to offer the update.
+`APP_VERSION` in the root Makefile is the version stored in the Switch application. A release tag must be newer than the installed version for the console to offer the update.
+
+### Android
+
+From `android/`:
+
+```sh
+./gradlew :app:assembleRelease
+```
+
+`versionName` / `versionCode` live in `android/app/build.gradle.kts`. GitHub releases attach `nexstatus.apk` and `android-version.txt` so the phone can detect updates independently of the Switch tag number.
 
 ## License
 

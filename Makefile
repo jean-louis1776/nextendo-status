@@ -1,4 +1,4 @@
-APP_VERSION ?= 1.1.3
+APP_VERSION ?= 1.1.4
 
 .PHONY: all app overlay dist clean
 
