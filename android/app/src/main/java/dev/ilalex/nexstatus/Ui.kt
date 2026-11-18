@@ -1010,62 +1010,88 @@ fun UpdateModal(
             AppUpdate.Idle -> ""
         }
         val downloading = update is AppUpdate.Downloading
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.28f))
-                .then(
-                    if (downloading) Modifier
-                    else Modifier.clickable(quiet, indication = null, onClick = onLater),
-                ),
-        ) {
-            Column(
+        val onSurface = MaterialTheme.colorScheme.onSurface
+        CompositionLocalProvider(LocalContentColor provides onSurface) {
+            Box(
                 Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 18.dp)
-                    .fillMaxWidth()
-                    .glass(haze, glass)
-                    .clickable(remember { MutableInteractionSource() }, indication = null, onClick = {})
-                    .padding(22.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.28f))
+                    .then(
+                        if (downloading) Modifier
+                        else Modifier.clickable(quiet, indication = null, onClick = onLater),
+                    ),
             ) {
-                Text(copy.updateTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(copy.updateBody(version), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
-                when (update) {
-                    is AppUpdate.Downloading -> {
-                        Text(copy.updateDownloading, fontWeight = FontWeight.Medium)
-                        UpdateBar(progress = if (update.total > 0) update.got.toFloat() / update.total.toFloat() else 0f)
-                        Text(
-                            downloadStats(update.got, update.total, update.speed),
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                    is AppUpdate.Failed -> {
-                        Text(copy.updateFailed, color = MaterialTheme.colorScheme.primary)
-                        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                            Text(copy.updateLater, modifier = Modifier.tap(onLater).padding(vertical = 4.dp), fontWeight = FontWeight.Medium)
+                Column(
+                    Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 18.dp)
+                        .fillMaxWidth()
+                        .glass(haze, glass)
+                        .clickable(remember { MutableInteractionSource() }, indication = null, onClick = {})
+                        .padding(22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        copy.updateTitle,
+                        color = onSurface,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(copy.updateBody(version), color = onSurface.copy(alpha = 0.78f))
+                    when (update) {
+                        is AppUpdate.Downloading -> {
+                            Text(copy.updateDownloading, color = onSurface, fontWeight = FontWeight.Medium)
+                            UpdateBar(progress = if (update.total > 0) update.got.toFloat() / update.total.toFloat() else 0f)
                             Text(
-                                copy.updateRetry,
-                                modifier = Modifier.tap(onUpdate).padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold,
+                                downloadStats(update.got, update.total, update.speed),
+                                color = onSurface.copy(alpha = 0.72f),
+                                style = MaterialTheme.typography.bodyMedium,
                             )
                         }
-                    }
-                    is AppUpdate.Available -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                            Text(copy.updateLater, modifier = Modifier.tap(onLater).padding(vertical = 4.dp), fontWeight = FontWeight.Medium)
-                            Text(
-                                copy.updateNow,
-                                modifier = Modifier.tap(onUpdate).padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold,
-                            )
+                        is AppUpdate.Failed -> {
+                            Text(copy.updateFailed, color = MaterialTheme.colorScheme.primary)
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    copy.updateLater,
+                                    modifier = Modifier.tap(onLater).padding(vertical = 4.dp),
+                                    color = onSurface.copy(alpha = 0.78f),
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    copy.updateRetry,
+                                    modifier = Modifier.tap(onUpdate).padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
                         }
+                        is AppUpdate.Available -> {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    copy.updateLater,
+                                    modifier = Modifier.tap(onLater).padding(vertical = 4.dp),
+                                    color = onSurface.copy(alpha = 0.78f),
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    copy.updateNow,
+                                    modifier = Modifier.tap(onUpdate).padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        AppUpdate.Idle -> Unit
                     }
-                    AppUpdate.Idle -> Unit
                 }
             }
         }
