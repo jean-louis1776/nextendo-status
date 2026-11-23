@@ -71,9 +71,9 @@ On launch the app checks GitHub for a newer Android build (`android-version.txt`
 
 ## Overlay
 
-Open Ultrahand, then NexStatus. Set **Overlay memory** to **8 MB** before use (see Install). The overlay lists the same servers as the homebrew app, but only games with at least one player, busiest first. Counts refresh about every 15 seconds while the list is open and are not requested while the overlay is closed.
+Open Ultrahand, then NexStatus. Set **Overlay memory** to **8 MB** before use (see Install). The 4 MB default is too small and can fail to load the overlay or crash Atmosphere. The overlay lists the same servers as the homebrew app, but only games with at least one player, busiest first. **Refresh** reloads the list. It does not reload on its own, and it does not request counts while the overlay is closed.
 
-**A** on a game opens its lobbies: mode name and the players in that room. The lobby page is a snapshot taken when it opens. **B** returns to the list. Signed out, **A** tells you to sign in through the NexStatus homebrew app (hold **R**, launch a game, open the Homebrew Menu, start NexStatus, sign in, then open the overlay again).
+**A** on a game shows the player count, lobbies with the mode name, and every player. **A** on a lobby shows who is in that room. **Refresh** on that page reloads it. **B** returns to the list. Signed out, **A** tells you to sign in through the NexStatus homebrew app (hold **R**, launch a game, open the Homebrew Menu, start NexStatus, sign in, then open the overlay again).
 
 ## Build
 

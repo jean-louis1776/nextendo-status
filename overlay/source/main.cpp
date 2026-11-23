@@ -16,7 +16,6 @@
 #include <map>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "config.hpp"
@@ -30,14 +29,22 @@ struct Row {
     int players = 0;
 };
 
-struct Line {
-    std::string text;
-    std::string value;
+struct Person {
+    std::string name;
+    std::string mark;
+};
+
+struct Room {
+    std::string title;
+    std::string places;
+    std::vector<Person> members;
 };
 
 struct DetailSnap {
-    std::string note = "Loading...";
-    std::vector<Line> lines;
+    std::string note;
+    std::vector<Person> lines;
+    std::vector<Room> rooms;
+    std::vector<Person> players;
     int generation = 0;
     bool ready = false;
 };
@@ -53,6 +60,7 @@ static std::atomic<bool> g_run{true};
 static std::atomic<bool> g_open{false};
 static std::atomic<bool> g_abort{false};
 static std::atomic<bool> g_refresh{false};
+static std::atomic<bool> g_fetched{false};
 static std::atomic<bool> g_detail{false};
 static std::atomic<bool> g_detailFetch{false};
 static std::mutex g_mu;
@@ -61,7 +69,9 @@ static DetailSnap g_detailSnap;
 static std::string g_detailTitle;
 static std::string g_detailToken;
 static int g_detailPlayers = 0;
-static std::thread g_worker;
+static Thread g_workerThread;
+static bool g_workerStarted = false;
+alignas(0x1000) static u8 g_workerStack[0x40000];
 static size_t g_bodyCap = 96 * 1024;
 
 static size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -102,10 +112,12 @@ static bool completeJson(const std::string& body) {
     return false;
 }
 
-static bool httpGet(const char* url, const char* ip, std::string& body, const char* token = nullptr) {
+static bool httpGet(const char* url, const char* ip, std::string& body, const char* token = nullptr, long timeoutSec = 12, bool gzip = false) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) return false;
+    const u64 freq = armGetSystemTickFreq();
+    g_deadline = armGetSystemTick() + (freq ? freq * static_cast<u64>(timeoutSec) : 0);
     std::string authz;
     std::string client;
     curl_slist* headers = nullptr;
@@ -117,11 +129,12 @@ static bool httpGet(const char* url, const char* ip, std::string& body, const ch
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     }
     curl_easy_setopt(curl, CURLOPT_URL, url);
+    if (gzip) curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutSec > 4 ? 4L : timeoutSec);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
@@ -138,6 +151,7 @@ static bool httpGet(const char* url, const char* ip, std::string& body, const ch
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlAbort);
     const CURLcode rc = curl_easy_perform(curl);
+    g_deadline = 0;
     long http = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
@@ -270,7 +284,7 @@ static void setConnected(const char* ip, Counts& counts, const char* url, const 
     if (replace) counts.erase(id);
     std::string body;
     int n = 0;
-    if (!httpGet(url, ip, body)) return;
+    if (!httpGet(url, ip, body, nullptr, 5)) return;
     if (replace && !jsonOnline(body)) return;
     if (jsonInt(body, "connected", n) && n >= 0) counts[id] = n;
 }
@@ -417,43 +431,27 @@ static bool queryA(const char* host, u32 dns, struct in_addr* out) {
 
 static bool lookupHost(char* ip, size_t ipLen) {
     ip[0] = '\0';
-    resolverSetEnableServiceDiscovery(false);
-    struct addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo* res = nullptr;
-    if (getaddrinfo("nextendo.network", "443", &hints, &res) == 0 && res != nullptr && res->ai_addr != nullptr) {
-        inet_ntop(AF_INET, &reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr, ip, ipLen);
-        freeaddrinfo(res);
-        return ip[0] != '\0';
-    }
-    if (res) freeaddrinfo(res);
-    u32 servers[4];
-    int count = 0;
     u32 addr = 0, mask = 0, gateway = 0, dns1 = 0, dns2 = 0;
-    if (R_SUCCEEDED(nifmGetCurrentIpConfigInfo(&addr, &mask, &gateway, &dns1, &dns2))) {
-        if (dns1) servers[count++] = dns1;
-        if (dns2) servers[count++] = dns2;
-    }
-    servers[count++] = htonl(0x01010101);
-    if (count < 4) servers[count++] = htonl(0x08080808);
+    nifmGetCurrentIpConfigInfo(&addr, &mask, &gateway, &dns1, &dns2);
+    const u32 servers[2] = {dns1 ? dns1 : htonl(0x01010101), htonl(0x01010101)};
     struct in_addr found{};
-    for (int i = 0; i < count; ++i) {
-        if (!queryA("nextendo.network", servers[i], &found)) continue;
+    for (u32 dns : servers) {
+        if (!queryA("nextendo.network", dns, &found)) continue;
         inet_ntop(AF_INET, &found, ip, ipLen);
-        return ip[0] != '\0';
+        if (ip[0] != '\0') return true;
     }
-    return false;
+    std::snprintf(ip, ipLen, "188.114.96.1");
+    return true;
 }
 
 static bool openNet(Net& net, char* ip, size_t ipLen) {
     SocketInitConfig cfg{};
-    cfg.tcp_tx_buf_size = 0x800;
-    cfg.tcp_rx_buf_size = 0x1000;
-    cfg.tcp_tx_buf_max_size = 0x2500;
-    cfg.tcp_rx_buf_max_size = 0x2500;
+    cfg.tcp_tx_buf_size = 0x4000;
+    cfg.tcp_rx_buf_size = 0x4000;
+    cfg.tcp_tx_buf_max_size = 0x8000;
+    cfg.tcp_rx_buf_max_size = 0x8000;
     cfg.udp_tx_buf_size = 0x800;
-    cfg.udp_rx_buf_size = 0x800;
+    cfg.udp_rx_buf_size = 0xA500;
     cfg.sb_efficiency = 1;
     cfg.num_bsd_sessions = 1;
     cfg.bsd_service_type = BsdServiceType_User;
@@ -500,18 +498,19 @@ static void fetchOnce() {
         publish(failed);
         return;
     }
-    const u64 freq = armGetSystemTickFreq();
-    g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
     g_bodyCap = 256 * 1024;
     std::string body;
-    const bool ok = httpGet("https://nextendo.network/api/online-counts", ip, body);
+    bool ok = httpGet("https://nextendo.network/api/online-counts", ip, body);
+    if (!ok && !stopped()) {
+        const char* fallback = std::strcmp(ip, "188.114.96.1") == 0 ? "188.114.97.1" : "188.114.96.1";
+        ok = httpGet("https://nextendo.network/api/online-counts", fallback, body);
+        if (ok) std::snprintf(ip, sizeof ip, "%s", fallback);
+    }
     if (stopped()) {
-        g_deadline = 0;
         closeNet(net);
         return;
     }
     if (!ok) {
-        g_deadline = 0;
         closeNet(net);
         Snap failed;
         failed.summary = "Couldn't load";
@@ -522,6 +521,16 @@ static void fetchOnce() {
     for (const auto& item : kCatalog) readIds(body, counts, item.ids, false);
     body.clear();
     body.shrink_to_fit();
+    auto show = [&] {
+        if (stopped()) return;
+        Snap next;
+        int players = 0;
+        fillRows(counts, next.rows, players);
+        next.ok = true;
+        next.summary = std::to_string(players);
+        publish(next);
+    };
+    show();
 
     setConnected(ip, counts, "https://nextendo.network/game-stats/sm3dw", "010028600ebda000", false);
     setConnected(ip, counts, "https://nextendo.network/game-stats/jamboree", "0100965017338000", true);
@@ -534,14 +543,14 @@ static void fetchOnce() {
                 "0100b3c014bda000", "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000",
                 "0100227010460000", "0100e46006708000", "01001cc01b2d4000"})
             counts.erase(id);
-        if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", ip, body))
+        if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", ip, body, nullptr, 5))
             readIds(body, counts, kServiceIds, false);
         body.clear();
         body.shrink_to_fit();
     }
     if (!stopped()) {
         int n = 0;
-        if (httpGet("https://nextendo.network/game-stats/uno-count", ip, body) &&
+        if (httpGet("https://nextendo.network/game-stats/uno-count", ip, body, nullptr, 5) &&
             body.find("\"game\":\"UNO\"") != std::string::npos && jsonInt(body, "connected", n) && n >= 0)
             counts["0100b6e012ebe000"] = n;
         body.clear();
@@ -549,7 +558,7 @@ static void fetchOnce() {
     if (!stopped()) {
         counts.erase("0100cea007d08000");
         int n = 0;
-        if (httpGet("https://nextendo.network/service-catalog/v1/crypt-status", ip, body) &&
+        if (httpGet("https://nextendo.network/service-catalog/v1/crypt-status", ip, body, nullptr, 5) &&
             jsonOnline(body) && body.find("room_members") != std::string::npos &&
             jsonInt(body, "players", n) && n >= 0 && n <= 1024)
             counts["0100cea007d08000"] = n;
@@ -558,21 +567,14 @@ static void fetchOnce() {
     if (!stopped()) {
         counts.erase("01004cc023582000");
         int n = 0;
-        if (httpGet("https://nextendo.network/service-catalog/v1/sr2-status", ip, body) &&
+        if (httpGet("https://nextendo.network/service-catalog/v1/sr2-status", ip, body, nullptr, 5) &&
             jsonOnline(body) && body.find("native_transport_connections") != std::string::npos &&
             jsonInt(body, "players", n) && n >= 0 && n <= 50000)
             counts["01004cc023582000"] = n;
         body.clear();
     }
-    g_deadline = 0;
     closeNet(net);
-    if (stopped()) return;
-    Snap next;
-    int players = 0;
-    fillRows(counts, next.rows, players);
-    next.ok = true;
-    next.summary = std::to_string(players);
-    publish(next);
+    show();
 }
 
 static std::string clip(std::string text, size_t limit) {
@@ -683,16 +685,33 @@ static std::vector<std::string> rawObjects(const std::string& arr, size_t limit)
     return out;
 }
 
+static bool sameId(const std::string& body, size_t at, const std::string& id) {
+    if (at == 0 || at + id.size() >= body.size() || body[at - 1] != '"' || body[at + id.size()] != '"') return false;
+    for (size_t i = 0; i < id.size(); ++i) {
+        unsigned char a = static_cast<unsigned char>(body[at + i]);
+        unsigned char b = static_cast<unsigned char>(id[i]);
+        if (a >= 'A' && a <= 'F') a = static_cast<unsigned char>(a + 32);
+        if (b >= 'A' && b <= 'F') b = static_cast<unsigned char>(b + 32);
+        if (a != b) return false;
+    }
+    return true;
+}
+
 static std::string gameObject(const std::string& body, const std::string& titleId) {
     if (titleId.empty()) return {};
-    const std::string needle = "\"" + titleId + "\"";
-    const auto hit = body.find(needle);
-    if (hit == std::string::npos) return {};
-    const auto open = body.rfind('{', hit);
-    if (open == std::string::npos) return {};
-    const auto close = matchClose(body, open);
-    if (close == std::string::npos) return {};
-    return body.substr(open, close - open + 1);
+    std::string best;
+    for (size_t at = 0; at + titleId.size() < body.size(); ++at) {
+        if (!sameId(body, at, titleId)) continue;
+        const auto open = body.rfind('{', at);
+        if (open == std::string::npos) continue;
+        const auto close = matchClose(body, open);
+        if (close == std::string::npos) continue;
+        std::string game = body.substr(open, close - open + 1);
+        if ((game.find("\"lobbies\"") != std::string::npos || game.find("\"players\"") != std::string::npos) && game.size() > best.size())
+            best = std::move(game);
+        at += titleId.size();
+    }
+    return best;
 }
 
 static void publishDetail(DetailSnap next) {
@@ -702,34 +721,40 @@ static void publishDetail(DetailSnap next) {
     g_detailSnap = std::move(next);
 }
 
+static Person personFrom(const std::string& obj) {
+    Person person;
+    person.name = rawString(obj, "name");
+    if (obj.find("\"you\":true") != std::string::npos) person.mark = "You";
+    else if (obj.find("\"friend\":true") != std::string::npos) person.mark = "Friend";
+    return person;
+}
+
 static DetailSnap lobbiesFrom(const std::string& game) {
     DetailSnap page;
     const bool roomsHidden = game.find("\"roomsAvailable\":false") != std::string::npos || game.find("\"nolist\":true") != std::string::npos;
-    const auto lobbies = rawObjects(rawArray(game, "lobbies"), 24);
-    const auto players = rawObjects(rawArray(game, "players"), 40);
-    if (roomsHidden) page.note = "Rooms are temporarily unavailable.";
-    else if (lobbies.empty()) page.note = players.empty() ? "Nobody is in a room." : "Online, but not in a room yet.";
-    else page.note = std::to_string(lobbies.size()) + (lobbies.size() == 1 ? " lobby" : " lobbies");
     if (!roomsHidden) {
+        const auto lobbies = rawObjects(rawArray(game, "lobbies"), 24);
         for (size_t i = 0; i < lobbies.size(); ++i) {
+            Room room;
             const std::string mode = rawString(lobbies[i], "mode");
+            room.title = "Lobby " + std::to_string(i + 1);
+            if (!mode.empty()) room.title += "  " + mode;
             const int count = rawInt(lobbies[i], "count");
             const int max = rawInt(lobbies[i], "max");
-            std::string title = "Lobby " + std::to_string(i + 1);
-            if (!mode.empty()) title += "  " + mode;
-            std::string places;
-            if (count >= 0 && max > 0) places = std::to_string(count) + "/" + std::to_string(max);
-            else if (count >= 0) places = std::to_string(count);
-            page.lines.push_back({title, places});
+            if (count >= 0 && max > 0) room.places = std::to_string(count) + "/" + std::to_string(max);
+            else if (count >= 0) room.places = std::to_string(count);
             for (const std::string& member : rawObjects(rawArray(lobbies[i], "players"), 32)) {
-                std::string name = rawString(member, "name");
-                if (name.empty()) continue;
-                if (member.find("\"you\":true") != std::string::npos) name += "  You";
-                else if (member.find("\"friend\":true") != std::string::npos) name += "  Friend";
-                page.lines.push_back({"  " + name, {}});
+                Person person = personFrom(member);
+                if (!person.name.empty()) room.members.push_back(std::move(person));
             }
+            page.rooms.push_back(std::move(room));
         }
     }
+    for (const std::string& player : rawObjects(rawArray(game, "players"), 48)) {
+        Person person = personFrom(player);
+        if (!person.name.empty()) page.players.push_back(std::move(person));
+    }
+    if (roomsHidden) page.note = "Rooms are temporarily unavailable.";
     return page;
 }
 
@@ -749,8 +774,8 @@ static void fetchDetail() {
     {
         std::lock_guard<std::mutex> lock(g_mu);
         titleId = g_detailTitle;
-        token = g_detailToken;
     }
+    token = loadToken();
     if (token.empty()) {
         DetailSnap page;
         page.note = "Not signed in";
@@ -778,15 +803,15 @@ static void fetchDetail() {
     }
     const u64 freq = armGetSystemTickFreq();
     g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
-    g_bodyCap = 96 * 1024;
+    g_bodyCap = 1024 * 1024;
     std::string body;
     std::string game;
-    if (httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str()))
+    if (httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str(), 20, true))
         game = gameObject(body, titleId);
     body.clear();
     body.shrink_to_fit();
     if (game.empty() && g_detail.load() && !g_abort.load()) {
-        if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str()))
+        if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
             game = gameObject(body, titleId);
         body.clear();
         body.shrink_to_fit();
@@ -806,7 +831,7 @@ static void fetchDetail() {
     publishDetail(std::move(page));
 }
 
-static void worker() {
+static void worker(void*) {
     while (g_run.load()) {
         if (g_detail.load()) {
             if (g_detailFetch.exchange(false)) {
@@ -820,13 +845,35 @@ static void worker() {
             svcSleepThread(100'000'000);
             continue;
         }
+        const bool refresh = g_refresh.exchange(false);
+        if (g_fetched.load() && !refresh) {
+            svcSleepThread(100'000'000);
+            continue;
+        }
         g_abort = false;
         fetchOnce();
-        for (int i = 0; i < 150 && g_run.load() && g_open.load() && !g_detail.load() && !g_refresh.load(); ++i)
-            svcSleepThread(100'000'000);
-        g_refresh = false;
+        g_fetched = true;
     }
 }
+
+class LobbyGui : public tsl::Gui {
+    std::string title_;
+    std::vector<Person> members_;
+
+public:
+    LobbyGui(std::string title, std::vector<Person> members)
+        : title_(std::move(title)), members_(std::move(members)) {}
+
+    tsl::elm::Element* createUI() override {
+        auto* frame = new tsl::elm::OverlayFrame("NexStatus", title_);
+        auto* rows = new tsl::elm::List();
+        if (members_.empty()) rows->addItem(new tsl::elm::ListItem("No players in this lobby."));
+        else for (const auto& member : members_)
+            rows->addItem(new tsl::elm::ListItem(member.name, member.mark));
+        frame->setContent(rows);
+        return frame;
+    }
+};
 
 class GameGui : public tsl::Gui {
     tsl::elm::List* list = nullptr;
@@ -838,9 +885,48 @@ class GameGui : public tsl::Gui {
     void rebuild(const DetailSnap& snap) {
         removeFocus();
         list->clear();
-        list->addItem(new tsl::elm::ListItem(snap.note));
-        for (const auto& line : snap.lines)
-            list->addItem(new tsl::elm::ListItem(line.text, line.value));
+        auto* refresh = new tsl::elm::ListItem("Refresh");
+        refresh->setClickListener([](u64 keys) {
+            if (keys & HidNpadButton_A) {
+                g_detailFetch = true;
+                return true;
+            }
+            return false;
+        });
+        list->addItem(refresh);
+        const bool failed = snap.rooms.empty() && snap.players.empty() && !snap.note.empty() && snap.note != "Rooms are temporarily unavailable.";
+        if (failed) {
+            list->addItem(new tsl::elm::ListItem(snap.note));
+            for (const auto& line : snap.lines)
+                list->addItem(new tsl::elm::ListItem(line.name));
+            shown = snap.generation;
+            return;
+        }
+        const int count = g_detailPlayers;
+        list->addItem(new tsl::elm::ListItem(std::to_string(count) + (count == 1 ? " player" : " players")));
+        if (!snap.note.empty())
+            list->addItem(new tsl::elm::ListItem(snap.note));
+        if (!snap.rooms.empty()) {
+            list->addItem(new tsl::elm::CategoryHeader("Lobbies"));
+            for (const auto& room : snap.rooms) {
+                auto* item = new tsl::elm::ListItem(room.title, room.places);
+                const std::string title = room.title;
+                const std::vector<Person> members = room.members;
+                item->setClickListener([title, members](u64 keys) {
+                    if (keys & HidNpadButton_A) {
+                        tsl::changeTo<LobbyGui>(title, members);
+                        return true;
+                    }
+                    return false;
+                });
+                list->addItem(item);
+            }
+        }
+        if (!snap.players.empty()) {
+            list->addItem(new tsl::elm::CategoryHeader("Players"));
+            for (const auto& player : snap.players)
+                list->addItem(new tsl::elm::ListItem(player.name, player.mark));
+        }
         shown = snap.generation;
     }
 
@@ -858,12 +944,11 @@ public:
     }
 
     tsl::elm::Element* createUI() override {
-        std::string token = loadToken();
         {
             std::lock_guard<std::mutex> lock(g_mu);
             g_detailTitle = titleId_;
             g_detailPlayers = players_;
-            g_detailToken = std::move(token);
+            g_detailToken.clear();
             g_detailSnap = DetailSnap{};
             g_detailSnap.note = "Loading...";
         }
@@ -872,6 +957,7 @@ public:
         g_detailFetch = true;
         auto* frame = new tsl::elm::OverlayFrame("NexStatus", name_);
         list = new tsl::elm::List();
+        list->addItem(new tsl::elm::ListItem("Loading..."));
         frame->setContent(list);
         return frame;
     }
@@ -949,7 +1035,10 @@ public:
         timeInitialize();
         curl_global_init(CURL_GLOBAL_DEFAULT);
         g_run = true;
-        g_worker = std::thread(worker);
+        if (R_SUCCEEDED(threadCreate(&g_workerThread, worker, nullptr, g_workerStack, sizeof(g_workerStack), 0x2C, -2))) {
+            g_workerStarted = R_SUCCEEDED(threadStart(&g_workerThread));
+            if (!g_workerStarted) threadClose(&g_workerThread);
+        }
     }
 
     void exitServices() override {
@@ -957,8 +1046,17 @@ public:
         g_abort = true;
         g_open = false;
         g_detail = false;
-        if (g_worker.joinable()) g_worker.join();
-        curl_global_cleanup();
+        if (g_workerStarted) {
+            s32 index = -1;
+            const Result waited = svcWaitSynchronization(&index, &g_workerThread.handle, 1, 300'000'000ULL);
+            if (R_SUCCEEDED(waited)) {
+                threadClose(&g_workerThread);
+                g_workerStarted = false;
+                curl_global_cleanup();
+            }
+        } else {
+            curl_global_cleanup();
+        }
         timeExit();
     }
 
