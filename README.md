@@ -1,6 +1,6 @@
 # NexStatus
 
-NexStatus is a Nintendo Switch homebrew application and an unofficial Android companion for [Nextendo](https://nextendo.network) server status. It lists game servers, player counts, and, after sign-in, lobbies and players. An [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay shows the same public counts on the console.
+NexStatus is a Nintendo Switch homebrew application and an unofficial Android companion for [Nextendo](https://nextendo.network) server status. It lists game servers, player counts, and, after sign-in, lobbies and players. An [Ultrahand](https://github.com/ppkantorski/Ultrahand-Overlay) overlay shows the same servers and, after sign-in, lobbies.
 
 NexStatus is not affiliated with Nintendo or Nextendo.
 
@@ -16,6 +16,8 @@ The Switch release is one zip. Extract it at the root of the SD card.
 | `switch/.overlays/nexstatus.ovl` | Ultrahand overlay |
 
 The Homebrew Menu is required for the application. Ultrahand is required for the overlay. Overlay files must be in `sdmc:/switch/.overlays/`.
+
+In Ultrahand, set **Overlay memory** to **8 MB**. The 4 MB default is too small: the overlay asks for an 8 MB heap so the Tesla screen and HTTPS fit together. With 4 MB it can fail to load or crash Atmosphere.
 
 ### Android
 
@@ -69,7 +71,9 @@ On launch the app checks GitHub for a newer Android build (`android-version.txt`
 
 ## Overlay
 
-Open Ultrahand, then NexStatus. The overlay lists the public player total and one row per game, busiest first. It refreshes about every 15 seconds while it is open and does not request data while it is closed. It does not show lobbies or account data.
+Open Ultrahand, then NexStatus. Set **Overlay memory** to **8 MB** before use (see Install). The overlay lists the same servers as the homebrew app, but only games with at least one player, busiest first. Counts refresh about every 15 seconds while the list is open and are not requested while the overlay is closed.
+
+**A** on a game opens its lobbies: mode name and the players in that room. The lobby page is a snapshot taken when it opens. **B** returns to the list. Signed out, **A** tells you to sign in through the NexStatus homebrew app (hold **R**, launch a game, open the Homebrew Menu, start NexStatus, sign in, then open the overlay again).
 
 ## Build
 

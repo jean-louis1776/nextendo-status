@@ -13,17 +13,33 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "config.hpp"
 
 // Tesla's framebuffer already uses most of a 4 MiB heap, so the BSD buffer has to stay small.
 extern "C" u64 __nx_heap_size = 0x800000;
 
 struct Row {
     std::string name;
+    std::string titleId;
     int players = 0;
+};
+
+struct Line {
+    std::string text;
+    std::string value;
+};
+
+struct DetailSnap {
+    std::string note = "Loading...";
+    std::vector<Line> lines;
+    int generation = 0;
+    bool ready = false;
 };
 
 struct Snap {
@@ -37,15 +53,22 @@ static std::atomic<bool> g_run{true};
 static std::atomic<bool> g_open{false};
 static std::atomic<bool> g_abort{false};
 static std::atomic<bool> g_refresh{false};
+static std::atomic<bool> g_detail{false};
+static std::atomic<bool> g_detailFetch{false};
 static std::mutex g_mu;
 static Snap g_snap;
+static DetailSnap g_detailSnap;
+static std::string g_detailTitle;
+static std::string g_detailToken;
+static int g_detailPlayers = 0;
 static std::thread g_worker;
+static size_t g_bodyCap = 96 * 1024;
 
 static size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
     if (g_abort.load() || !g_run.load()) return 0;
     auto* out = static_cast<std::string*>(userdata);
     const size_t n = size * nmemb;
-    if (out->size() + n > 96 * 1024) return 0;
+    if (out->size() + n > g_bodyCap) return 0;
     out->append(ptr, n);
     return n;
 }
@@ -57,10 +80,42 @@ static int curlAbort(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     return (g_abort.load() || !g_run.load()) ? 1 : 0;
 }
 
-static CURLcode httpGet(const char* url, const char* ip, std::string& body) {
+static bool completeJson(const std::string& body) {
+    int depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    bool started = false;
+    for (const char ch : body) {
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (ch == '\\') escaped = true;
+            else if (ch == '"') inString = false;
+            continue;
+        }
+        if (ch == '"') inString = true;
+        else if (ch == '{') { ++depth; started = true; }
+        else if (ch == '}') {
+            --depth;
+            if (started && depth == 0) return true;
+        }
+    }
+    return false;
+}
+
+static bool httpGet(const char* url, const char* ip, std::string& body, const char* token = nullptr) {
     body.clear();
     CURL* curl = curl_easy_init();
-    if (!curl) return CURLE_FAILED_INIT;
+    if (!curl) return false;
+    std::string authz;
+    std::string client;
+    curl_slist* headers = nullptr;
+    if (token != nullptr && token[0] != '\0') {
+        authz = std::string("Authorization: Bearer ") + token;
+        client = "X-Nextendo-Client-Id: nxc_dyNRS0L9SLND";
+        headers = curl_slist_append(nullptr, authz.c_str());
+        headers = curl_slist_append(headers, client.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -87,51 +142,162 @@ static CURLcode httpGet(const char* url, const char* ip, std::string& body) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
     curl_slist_free_all(resolve);
-    if (rc != CURLE_OK || http != 200 || body.empty()) return rc == CURLE_OK ? CURLE_HTTP_RETURNED_ERROR : rc;
-    return CURLE_OK;
+    curl_slist_free_all(headers);
+    if (http >= 400 || body.empty()) return false;
+    if (rc == CURLE_OK && http == 200) return true;
+    return (http == 200 || http == 0) && completeJson(body);
 }
 
-static void parseJeux(const std::string& body, std::vector<Row>& rows, int& players) {
+struct CatalogItem {
+    const char* name;
+    const char* ids;
+};
+
+static const CatalogItem kCatalog[] = {
+    {"SpeedRunners 2: King of Speed", "01004cc023582000"},
+    {"SEGA Genesis - Nintendo Classics", "0100b3c014bda000"},
+    {"Just Dance 2022", "0100ea6014bb8000"},
+    {"Mario Kart 8 Deluxe", "0100152000022000"},
+    {"Splatoon 2", "0100f8f0000a2000,01003bc0000a0000,01003c700009c800"},
+    {"Splatoon 3", "0100c2500fc20000"},
+    {"Super Smash Bros. Ultimate", "01006a800016e000"},
+    {"Animal Crossing: New Horizons", "01006f8002326000"},
+    {"Luigi's Mansion 3", "0100dca0064a6000"},
+    {"Minecraft: Nintendo Switch Edition", "01006bd001e06000"},
+    {"ARMS", "01009b500007c000"},
+    {"Mario Tennis Aces", "0100bde00862a000"},
+    {"Super Mario Maker 2", "01009b90006dc000"},
+    {"PAC-MAN 99", "0100ad9012510000"},
+    {"Among Us", "0100b0c013912000"},
+    {"Mario & Sonic at the Olympic Games Tokyo 2020", "010086000e148000"},
+    {"Tetris 99", "010040600c5ce000"},
+    {"Super Mario Bros. 35", "0100277011f1a000"},
+    {"Super Mario Bros. Wonder", "010015100b514000"},
+    {"Clubhouse Games: 51 Worldwide Classics", "010047700d540000"},
+    {"Monster Hunter Generations Ultimate", "0100770008dd8000"},
+    {"Crash Team Racing Nitro-Fueled", "0100f9f00c696000"},
+    {"Diablo III: Eternal Collection", "01001b300b9be000"},
+    {"Mario Party Superstars", "01006fe013472000"},
+    {"Super Mario Party Jamboree", "0100965017338000"},
+    {"Kirby's Dream Buffet", "0100a8e016236000"},
+    {"Stardew Valley", "0100e65002bb8000"},
+    {"Overcooked! 2", "01006fd0080b2000"},
+    {"Pokémon Scarlet and Violet", "0100a3d008c5c000,01008f6008c5e000"},
+    {"Nintendo 64 - Nintendo Classics", "0100c9a00ece6000"},
+    {"NES - Nintendo Classics", "0100d870045b6000"},
+    {"SNES - Nintendo Classics", "01008d300c50c000"},
+    {"Game Boy - Nintendo Classics", "0100c62011050000"},
+    {"Game Boy Advance - Nintendo Classics", "010012f017576000"},
+    {"Pokémon Legends: Z-A", "0100f43008c44000"},
+    {"Pokémon Sword and Shield", "0100abf008968000,01008db008c2c000"},
+    {"Super Monkey Ball Banana Mania", "010001701248c000"},
+    {"Mario Golf: Super Rush", "0100c9c00e25c000"},
+    {"Super Mario 3D World + Bowser's Fury", "010028600ebda000"},
+    {"Super Mario Odyssey", "0100000000010000"},
+    {"METAL GEAR SOLID: Peace Walker", "0100c6f01c4f8000"},
+    {"Mario Strikers: Battle League", "010019401051c000"},
+    {"Minecraft Dungeons II", "0100a7c01b792000"},
+    {"Pokkén Tournament DX", "0100b3f000be2000"},
+    {"Saints Row: The Third - The Full Package", "0100de600beee000"},
+    {"UNO", "0100b6e012ebe000"},
+    {"Dying Light: Platinum Edition", "01008c8012920000"},
+    {"Guilty Gear -Strive-", "0100ab401f136000"},
+    {"Kirby Fighters 2", "0100227010460000"},
+    {"Terraria", "0100e46006708000"},
+    {"Goat Simulator 3", "01001cc01b2d4000"},
+    {"Super Kirby Clash", "01003fb00c5a8000"},
+    {"Ultimate Chicken Horse", "0100fcf002a58000"},
+    {"Crypt of the NecroDancer", "0100cea007d08000"},
+    {"Nintendo Switch Sports", "0100d2f00d5c0000"},
+    {"Monopoly for Nintendo Switch", "01007430037f6000"},
+    {"Dragon Ball FighterZ", "0100a250097f0000"},
+    {"Friday the 13th: The Game", "010092a00c4b6000"},
+    {"Monster Hunter Rise", "0100b04011742000"},
+    {"Miitopia", "01003da010e8a000"},
+    {"Game Builder Garage", "0100fa5010788000"},
+    {"Zombie Army 4: Dead War", "01000bf0152fa000"},
+};
+
+static const char* kServiceIds =
+    "0100d870045b6000,01008d300c50c000,0100c62011050000,010012f017576000,0100b3c014bda000,"
+    "0100fcf002a58000,0100ab401f136000,01003fb00c5a8000,0100227010460000,0100e46006708000,01001cc01b2d4000";
+
+using Counts = std::map<std::string, int>;
+
+static bool countFor(const std::string& body, const std::string& id, int& out) {
+    const std::string key = "\"" + id + "\":";
+    const auto pos = body.find(key);
+    if (pos == std::string::npos) return false;
+    out = std::atoi(body.c_str() + pos + key.size());
+    return true;
+}
+
+static void readIds(const std::string& body, Counts& counts, const char* csv, bool replace) {
+    std::string ids = csv;
+    while (!ids.empty()) {
+        const auto comma = ids.find(',');
+        const std::string id = ids.substr(0, comma);
+        if (replace) counts.erase(id);
+        int n = 0;
+        if (countFor(body, id, n) && n >= 0) counts[id] = n;
+        if (comma == std::string::npos) break;
+        ids.erase(0, comma + 1);
+    }
+}
+
+static bool jsonInt(const std::string& body, const char* key, int& out) {
+    std::string token = std::string("\"") + key + "\":";
+    auto pos = body.find(token);
+    if (pos == std::string::npos) {
+        token = std::string("\"") + key + "\": ";
+        pos = body.find(token);
+    }
+    if (pos == std::string::npos) return false;
+    out = std::atoi(body.c_str() + pos + token.size());
+    return true;
+}
+
+static bool jsonOnline(const std::string& body) {
+    return body.find("\"online\":true") != std::string::npos || body.find("\"online\": true") != std::string::npos;
+}
+
+static bool stopped() {
+    return g_abort.load() || g_detail.load() || !g_run.load();
+}
+
+static void setConnected(const char* ip, Counts& counts, const char* url, const char* id, bool replace) {
+    if (stopped()) return;
+    if (replace) counts.erase(id);
+    std::string body;
+    int n = 0;
+    if (!httpGet(url, ip, body)) return;
+    if (replace && !jsonOnline(body)) return;
+    if (jsonInt(body, "connected", n) && n >= 0) counts[id] = n;
+}
+
+static void fillRows(const Counts& counts, std::vector<Row>& rows, int& players) {
     rows.clear();
     players = 0;
-    size_t pos = body.find("\"jeux\"");
-    if (pos == std::string::npos) return;
-    const auto noms = body.find("\"noms\"");
-    while (rows.size() < 80) {
-        const auto nom = body.find("\"nom\":\"", pos);
-        if (nom == std::string::npos || (noms != std::string::npos && nom > noms)) break;
-        const auto n1 = nom + 7;
-        const auto n2 = body.find('"', n1);
-        if (n2 == std::string::npos) break;
-        const auto joueurs = body.find("\"joueurs\":", n2);
-        if (joueurs == std::string::npos) break;
-        Row row;
-        row.name = body.substr(n1, n2 - n1);
-        for (size_t i = 0; i + 5 < row.name.size(); ) {
-            if (row.name[i] == '\\' && row.name[i + 1] == 'u') {
-                int cp = 0;
-                bool hex = true;
-                for (int k = 0; k < 4; ++k) {
-                    const char h = row.name[i + 2 + k];
-                    int v = 0;
-                    if (h >= '0' && h <= '9') v = h - '0';
-                    else if (h >= 'a' && h <= 'f') v = h - 'a' + 10;
-                    else if (h >= 'A' && h <= 'F') v = h - 'A' + 10;
-                    else { hex = false; break; }
-                    cp = (cp << 4) | v;
-                }
-                if (hex && cp > 0 && cp < 128) {
-                    row.name.replace(i, 6, 1, static_cast<char>(cp));
-                    continue;
-                }
+    for (const auto& item : kCatalog) {
+        std::string ids = item.ids;
+        std::string first;
+        int best = 0;
+        bool found = false;
+        while (!ids.empty()) {
+            const auto comma = ids.find(',');
+            const std::string id = ids.substr(0, comma);
+            if (first.empty()) first = id;
+            const auto it = counts.find(id);
+            if (it != counts.end()) {
+                found = true;
+                if (it->second > best) best = it->second;
             }
-            ++i;
+            if (comma == std::string::npos) break;
+            ids.erase(0, comma + 1);
         }
-        row.players = std::atoi(body.c_str() + joueurs + 10);
-        if (row.players < 0) row.players = 0;
-        players += row.players;
-        rows.push_back(std::move(row));
-        pos = n2 + 1;
+        if (!found || best <= 0) continue;
+        players += best;
+        rows.push_back(Row{item.name, std::move(first), best});
     }
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
         if (a.players != b.players) return a.players > b.players;
@@ -282,10 +448,10 @@ static bool lookupHost(char* ip, size_t ipLen) {
 
 static bool openNet(Net& net, char* ip, size_t ipLen) {
     SocketInitConfig cfg{};
-    cfg.tcp_tx_buf_size = 0x4000;
-    cfg.tcp_rx_buf_size = 0x4000;
-    cfg.tcp_tx_buf_max_size = 0x8000;
-    cfg.tcp_rx_buf_max_size = 0x8000;
+    cfg.tcp_tx_buf_size = 0x800;
+    cfg.tcp_rx_buf_size = 0x1000;
+    cfg.tcp_tx_buf_max_size = 0x2500;
+    cfg.tcp_rx_buf_max_size = 0x2500;
     cfg.udp_tx_buf_size = 0x800;
     cfg.udp_rx_buf_size = 0x800;
     cfg.sb_efficiency = 1;
@@ -336,37 +502,390 @@ static void fetchOnce() {
     }
     const u64 freq = armGetSystemTickFreq();
     g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
+    g_bodyCap = 256 * 1024;
     std::string body;
-    const CURLcode rc = httpGet("https://nextendo.network/api/online-counts", ip, body);
-    g_deadline = 0;
-    closeNet(net);
-    if (rc != CURLE_OK || g_abort.load()) {
+    const bool ok = httpGet("https://nextendo.network/api/online-counts", ip, body);
+    if (stopped()) {
+        g_deadline = 0;
+        closeNet(net);
+        return;
+    }
+    if (!ok) {
+        g_deadline = 0;
+        closeNet(net);
         Snap failed;
-        failed.summary = std::string("Couldn't load ") + std::to_string(static_cast<int>(rc));
+        failed.summary = "Couldn't load";
         publish(failed);
         return;
     }
+    Counts counts;
+    for (const auto& item : kCatalog) readIds(body, counts, item.ids, false);
+    body.clear();
+    body.shrink_to_fit();
+
+    setConnected(ip, counts, "https://nextendo.network/game-stats/sm3dw", "010028600ebda000", false);
+    setConnected(ip, counts, "https://nextendo.network/game-stats/jamboree", "0100965017338000", true);
+    setConnected(ip, counts, "https://nextendo.network/game-stats/stardew", "0100e65002bb8000", true);
+    setConnected(ip, counts, "https://nextendo.network/game-stats/kirby", "0100a8e016236000", true);
+    setConnected(ip, counts, "https://nextendo.network/game-stats/justdance22", "0100ea6014bb8000", true);
+
+    if (!stopped()) {
+        for (const char* id : {"0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000",
+                "0100b3c014bda000", "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000",
+                "0100227010460000", "0100e46006708000", "01001cc01b2d4000"})
+            counts.erase(id);
+        if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", ip, body))
+            readIds(body, counts, kServiceIds, false);
+        body.clear();
+        body.shrink_to_fit();
+    }
+    if (!stopped()) {
+        int n = 0;
+        if (httpGet("https://nextendo.network/game-stats/uno-count", ip, body) &&
+            body.find("\"game\":\"UNO\"") != std::string::npos && jsonInt(body, "connected", n) && n >= 0)
+            counts["0100b6e012ebe000"] = n;
+        body.clear();
+    }
+    if (!stopped()) {
+        counts.erase("0100cea007d08000");
+        int n = 0;
+        if (httpGet("https://nextendo.network/service-catalog/v1/crypt-status", ip, body) &&
+            jsonOnline(body) && body.find("room_members") != std::string::npos &&
+            jsonInt(body, "players", n) && n >= 0 && n <= 1024)
+            counts["0100cea007d08000"] = n;
+        body.clear();
+    }
+    if (!stopped()) {
+        counts.erase("01004cc023582000");
+        int n = 0;
+        if (httpGet("https://nextendo.network/service-catalog/v1/sr2-status", ip, body) &&
+            jsonOnline(body) && body.find("native_transport_connections") != std::string::npos &&
+            jsonInt(body, "players", n) && n >= 0 && n <= 50000)
+            counts["01004cc023582000"] = n;
+        body.clear();
+    }
+    g_deadline = 0;
+    closeNet(net);
+    if (stopped()) return;
     Snap next;
     int players = 0;
-    parseJeux(body, next.rows, players);
+    fillRows(counts, next.rows, players);
     next.ok = true;
     next.summary = std::to_string(players);
     publish(next);
 }
 
+static std::string clip(std::string text, size_t limit) {
+    if (text.size() > limit) text.resize(limit);
+    return text;
+}
+
+static std::string rawString(const std::string& obj, const char* key) {
+    const std::string pat = std::string("\"") + key + "\"";
+    const auto k = obj.find(pat);
+    if (k == std::string::npos) return {};
+    const auto colon = obj.find(':', k + pat.size());
+    if (colon == std::string::npos) return {};
+    const auto q1 = obj.find('"', colon + 1);
+    if (q1 == std::string::npos || q1 > colon + 8) return {};
+    const auto q2 = obj.find('"', q1 + 1);
+    if (q2 == std::string::npos) return {};
+    return clip(obj.substr(q1 + 1, q2 - q1 - 1), 64);
+}
+
+static int rawInt(const std::string& obj, const char* key) {
+    const std::string pat = std::string("\"") + key + "\"";
+    const auto k = obj.find(pat);
+    if (k == std::string::npos) return -1;
+    const auto colon = obj.find(':', k + pat.size());
+    if (colon == std::string::npos) return -1;
+    return std::atoi(obj.c_str() + colon + 1);
+}
+
+static size_t matchClose(const std::string& body, size_t open) {
+    if (open >= body.size() || body[open] != '{') return std::string::npos;
+    bool str = false;
+    bool esc = false;
+    int depth = 0;
+    for (size_t i = open; i < body.size(); ++i) {
+        const char c = body[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') str = true;
+        else if (c == '{') ++depth;
+        else if (c == '}') {
+            --depth;
+            if (depth == 0) return i;
+        }
+    }
+    return std::string::npos;
+}
+
+static std::string rawArray(const std::string& obj, const char* key) {
+    const std::string pat = std::string("\"") + key + "\"";
+    const auto k = obj.find(pat);
+    if (k == std::string::npos) return {};
+    const auto open = obj.find('[', k + pat.size());
+    if (open == std::string::npos) return {};
+    bool str = false;
+    bool esc = false;
+    int depth = 0;
+    for (size_t i = open; i < obj.size(); ++i) {
+        const char c = obj[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') str = true;
+        else if (c == '[') ++depth;
+        else if (c == ']') {
+            --depth;
+            if (depth == 0) return obj.substr(open, i - open + 1);
+        }
+    }
+    return {};
+}
+
+static std::vector<std::string> rawObjects(const std::string& arr, size_t limit) {
+    std::vector<std::string> out;
+    if (arr.empty()) return out;
+    bool str = false;
+    bool esc = false;
+    int depth = 0;
+    size_t start = std::string::npos;
+    for (size_t i = 0; i < arr.size(); ++i) {
+        const char c = arr[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') str = true;
+        else if (c == '{' || c == '[') {
+            if (c == '{' && depth == 1) start = i;
+            ++depth;
+        } else if (c == '}' || c == ']') {
+            --depth;
+            if (c == '}' && depth == 1 && start != std::string::npos) {
+                out.push_back(arr.substr(start, i - start + 1));
+                start = std::string::npos;
+                if (out.size() >= limit) break;
+            }
+        }
+    }
+    return out;
+}
+
+static std::string gameObject(const std::string& body, const std::string& titleId) {
+    if (titleId.empty()) return {};
+    const std::string needle = "\"" + titleId + "\"";
+    const auto hit = body.find(needle);
+    if (hit == std::string::npos) return {};
+    const auto open = body.rfind('{', hit);
+    if (open == std::string::npos) return {};
+    const auto close = matchClose(body, open);
+    if (close == std::string::npos) return {};
+    return body.substr(open, close - open + 1);
+}
+
+static void publishDetail(DetailSnap next) {
+    std::lock_guard<std::mutex> lock(g_mu);
+    next.generation = g_detailSnap.generation + 1;
+    next.ready = true;
+    g_detailSnap = std::move(next);
+}
+
+static DetailSnap lobbiesFrom(const std::string& game) {
+    DetailSnap page;
+    const bool roomsHidden = game.find("\"roomsAvailable\":false") != std::string::npos || game.find("\"nolist\":true") != std::string::npos;
+    const auto lobbies = rawObjects(rawArray(game, "lobbies"), 24);
+    const auto players = rawObjects(rawArray(game, "players"), 40);
+    if (roomsHidden) page.note = "Rooms are temporarily unavailable.";
+    else if (lobbies.empty()) page.note = players.empty() ? "Nobody is in a room." : "Online, but not in a room yet.";
+    else page.note = std::to_string(lobbies.size()) + (lobbies.size() == 1 ? " lobby" : " lobbies");
+    if (!roomsHidden) {
+        for (size_t i = 0; i < lobbies.size(); ++i) {
+            const std::string mode = rawString(lobbies[i], "mode");
+            const int count = rawInt(lobbies[i], "count");
+            const int max = rawInt(lobbies[i], "max");
+            std::string title = "Lobby " + std::to_string(i + 1);
+            if (!mode.empty()) title += "  " + mode;
+            std::string places;
+            if (count >= 0 && max > 0) places = std::to_string(count) + "/" + std::to_string(max);
+            else if (count >= 0) places = std::to_string(count);
+            page.lines.push_back({title, places});
+            for (const std::string& member : rawObjects(rawArray(lobbies[i], "players"), 32)) {
+                std::string name = rawString(member, "name");
+                if (name.empty()) continue;
+                if (member.find("\"you\":true") != std::string::npos) name += "  You";
+                else if (member.find("\"friend\":true") != std::string::npos) name += "  Friend";
+                page.lines.push_back({"  " + name, {}});
+            }
+        }
+    }
+    return page;
+}
+
+static std::string loadToken() {
+    std::string token;
+    tsl::hlp::doWithSDCardHandle([&] {
+        AppConfig config;
+        config.load(kSharedConfigPath);
+        token = std::move(config.access_token);
+    });
+    return token;
+}
+
+static void fetchDetail() {
+    std::string titleId;
+    std::string token;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        titleId = g_detailTitle;
+        token = g_detailToken;
+    }
+    if (token.empty()) {
+        DetailSnap page;
+        page.note = "Not signed in";
+        page.lines.push_back({"Sign in with the NexStatus app.", {}});
+        page.lines.push_back({"Hold R and launch a game", {}});
+        page.lines.push_back({"to open the Homebrew Menu.", {}});
+        page.lines.push_back({"Start NexStatus and sign in,", {}});
+        page.lines.push_back({"then open this overlay again.", {}});
+        publishDetail(std::move(page));
+        return;
+    }
+    if (titleId.empty()) {
+        DetailSnap page;
+        page.note = "This game has no title id.";
+        publishDetail(std::move(page));
+        return;
+    }
+    Net net;
+    char ip[16]{};
+    if (!openNet(net, ip, sizeof ip)) {
+        DetailSnap page;
+        page.note = "No network";
+        publishDetail(std::move(page));
+        return;
+    }
+    const u64 freq = armGetSystemTickFreq();
+    g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
+    g_bodyCap = 96 * 1024;
+    std::string body;
+    std::string game;
+    if (httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str()))
+        game = gameObject(body, titleId);
+    body.clear();
+    body.shrink_to_fit();
+    if (game.empty() && g_detail.load() && !g_abort.load()) {
+        if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str()))
+            game = gameObject(body, titleId);
+        body.clear();
+        body.shrink_to_fit();
+    }
+    g_deadline = 0;
+    closeNet(net);
+    if (!g_detail.load() || g_abort.load()) return;
+    if (game.empty()) {
+        DetailSnap page;
+        page.note = "Couldn't load lobbies.";
+        publishDetail(std::move(page));
+        return;
+    }
+    DetailSnap page = lobbiesFrom(game);
+    game.clear();
+    game.shrink_to_fit();
+    publishDetail(std::move(page));
+}
+
 static void worker() {
     while (g_run.load()) {
+        if (g_detail.load()) {
+            if (g_detailFetch.exchange(false)) {
+                g_abort = false;
+                fetchDetail();
+            }
+            svcSleepThread(100'000'000);
+            continue;
+        }
         if (!g_open.load()) {
             svcSleepThread(100'000'000);
             continue;
         }
         g_abort = false;
         fetchOnce();
-        for (int i = 0; i < 150 && g_run.load() && g_open.load() && !g_refresh.load(); ++i)
+        for (int i = 0; i < 150 && g_run.load() && g_open.load() && !g_detail.load() && !g_refresh.load(); ++i)
             svcSleepThread(100'000'000);
         g_refresh = false;
     }
 }
+
+class GameGui : public tsl::Gui {
+    tsl::elm::List* list = nullptr;
+    int shown = -1;
+    std::string name_;
+    std::string titleId_;
+    int players_ = 0;
+
+    void rebuild(const DetailSnap& snap) {
+        removeFocus();
+        list->clear();
+        list->addItem(new tsl::elm::ListItem(snap.note));
+        for (const auto& line : snap.lines)
+            list->addItem(new tsl::elm::ListItem(line.text, line.value));
+        shown = snap.generation;
+    }
+
+public:
+    GameGui(std::string name, std::string titleId, int players)
+        : name_(std::move(name)), titleId_(std::move(titleId)), players_(players) {}
+
+    ~GameGui() override {
+        g_abort = true;
+        g_detail = false;
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_detailSnap = DetailSnap{};
+        g_detailTitle.clear();
+        g_detailToken.clear();
+    }
+
+    tsl::elm::Element* createUI() override {
+        std::string token = loadToken();
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            g_detailTitle = titleId_;
+            g_detailPlayers = players_;
+            g_detailToken = std::move(token);
+            g_detailSnap = DetailSnap{};
+            g_detailSnap.note = "Loading...";
+        }
+        g_abort = true;
+        g_detail = true;
+        g_detailFetch = true;
+        auto* frame = new tsl::elm::OverlayFrame("NexStatus", name_);
+        list = new tsl::elm::List();
+        frame->setContent(list);
+        return frame;
+    }
+
+    void update() override {
+        DetailSnap snap;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            snap = g_detailSnap;
+        }
+        if (list == nullptr || !snap.ready || snap.generation == shown) return;
+        rebuild(snap);
+    }
+};
 
 class StatusGui : public tsl::Gui {
     tsl::elm::List* list = nullptr;
@@ -387,8 +906,20 @@ class StatusGui : public tsl::Gui {
         list->addItem(new tsl::elm::ListItem("Online", snap.summary));
         if (!snap.rows.empty())
             list->addItem(new tsl::elm::CategoryHeader("Games"));
-        for (const auto& row : snap.rows)
-            list->addItem(new tsl::elm::ListItem(row.name, std::to_string(row.players)));
+        for (const auto& row : snap.rows) {
+            auto* item = new tsl::elm::ListItem(row.name, std::to_string(row.players));
+            const std::string name = row.name;
+            const std::string titleId = row.titleId;
+            const int players = row.players;
+            item->setClickListener([name, titleId, players](u64 keys) {
+                if (keys & HidNpadButton_A) {
+                    tsl::changeTo<GameGui>(name, titleId, players);
+                    return true;
+                }
+                return false;
+            });
+            list->addItem(item);
+        }
         shown = snap.generation;
     }
 
@@ -425,6 +956,7 @@ public:
         g_run = false;
         g_abort = true;
         g_open = false;
+        g_detail = false;
         if (g_worker.joinable()) g_worker.join();
         curl_global_cleanup();
         timeExit();

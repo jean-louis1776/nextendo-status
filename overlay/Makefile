@@ -40,13 +40,13 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE	:=	NexStatus
 APP_AUTHOR	:=	ILALEX
-APP_VERSION	:=	1.1.11
+APP_VERSION	:=	1.1.12
 
 TARGET		:=	nexstatus
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
-INCLUDES	:=	../include
+INCLUDES	:=	../include ../common/include
 
 NO_ICON		:=  1
 
