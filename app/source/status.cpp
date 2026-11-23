@@ -1,5 +1,6 @@
 #define CURL_STATICLIB
 #include "status.h"
+#include "config.hpp"
 #include "log.hpp"
 
 #include <switch.h>
@@ -14,18 +15,29 @@
 
 namespace {
 
+size_t httpCap = 262144;
+
 size_t writeBody(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* out = static_cast<std::string*>(userdata);
     const size_t n = size * nmemb;
-    if (out->size() + n > 262144) return 0;
+    if (out->size() + n > httpCap) return 0;
     out->append(ptr, n);
     return n;
 }
 
-long httpGet(const std::string& url, std::string& body, const std::atomic<bool>& halt, long timeout = 12) {
+long httpGet(const std::string& url, std::string& body, const std::atomic<bool>& halt, long timeout = 12, const char* token = nullptr) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) return 0;
+    curl_slist* headers = nullptr;
+    std::string auth;
+    if (token && token[0]) {
+        auth = std::string("Authorization: Bearer ") + token;
+        headers = curl_slist_append(nullptr, auth.c_str());
+        headers = curl_slist_append(headers, "X-Nextendo-Client-Id: nxc_dyNRS0L9SLND");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -46,6 +58,7 @@ long httpGet(const std::string& url, std::string& body, const std::atomic<bool>&
     if (rc == CURLE_OK)
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
     curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
     logHttp("GET", url, http, rc, body.size(), http == 200 ? nullptr : &body);
     return http;
 }
@@ -118,6 +131,7 @@ const CatalogItem kCatalog[] = {
     {"Friday the 13th: The Game", "010092a00c4b6000", false, false},
     {"Monster Hunter Rise", "0100b04011742000", false, false},
     {"Miitopia", "01003da010e8a000", false, false},
+    {"Portal 2", "0100abd01785c000", false, false},
     {"Game Builder Garage", "0100fa5010788000", false, false},
     {"Zombie Army 4: Dead War", "01000bf0152fa000", false, false},
 };
@@ -173,7 +187,67 @@ void setConnected(const std::atomic<bool>& stop, Counts& counts, const char* url
 
 const char* kServiceIds =
     "0100d870045b6000,01008d300c50c000,0100c62011050000,010012f017576000,0100b3c014bda000,"
-    "0100fcf002a58000,0100ab401f136000,01003fb00c5a8000,0100227010460000,0100e46006708000,01001cc01b2d4000";
+    "0100fcf002a58000,0100ab401f136000,01003fb00c5a8000,0100227010460000,0100e46006708000,01001cc01b2d4000,"
+    "0100e65002bb8000";
+
+const char* kDetailedIds[] = {
+    "0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000", "0100b3c014bda000",
+    "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000", "0100227010460000", "0100e46006708000",
+    "01001cc01b2d4000", "0100e65002bb8000", "0100ea6014bb8000",
+};
+
+size_t matchEnd(const std::string& body, size_t open, char left, char right) {
+    bool str = false;
+    bool esc = false;
+    int depth = 0;
+    for (size_t i = open; i < body.size(); ++i) {
+        const char c = body[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') str = true;
+        else if (c == left) ++depth;
+        else if (c == right && --depth == 0) return i;
+    }
+    return std::string::npos;
+}
+
+void applyLiveCounts(const std::string& body, Counts& counts) {
+    for (const char* id : kDetailedIds) {
+        const std::string needle = std::string("\"") + id + "\"";
+        for (size_t at = 0; (at = body.find(needle, at)) != std::string::npos; at += needle.size()) {
+            const auto open = body.rfind('{', at);
+            if (open == std::string::npos) continue;
+            const auto close = matchEnd(body, open, '{', '}');
+            if (close == std::string::npos || close < at) continue;
+            const std::string game = body.substr(open, close - open + 1);
+            if (game.find("\"players\"") == std::string::npos || game.find("\"lobbies\"") == std::string::npos) continue;
+            const auto titlesAt = game.find("\"titles\"");
+            const auto titlesOpen = titlesAt == std::string::npos ? std::string::npos : game.find('[', titlesAt);
+            const auto titlesClose = titlesOpen == std::string::npos ? std::string::npos : matchEnd(game, titlesOpen, '[', ']');
+            if (titlesClose == std::string::npos) continue;
+            int quotes = 0;
+            for (size_t i = titlesOpen; i <= titlesClose; ++i) if (game[i] == '"') ++quotes;
+            if (quotes != 2) continue;
+            const auto playersAt = game.find("\"players\"");
+            const auto playersOpen = game.find('[', playersAt);
+            const auto playersClose = playersOpen == std::string::npos ? std::string::npos : matchEnd(game, playersOpen, '[', ']');
+            if (playersClose == std::string::npos) continue;
+            int names = 0;
+            for (size_t p = playersOpen; p < playersClose; ) {
+                p = game.find("\"name\"", p);
+                if (p == std::string::npos || p >= playersClose) break;
+                ++names;
+                p += 6;
+            }
+            counts[id] = names;
+            break;
+        }
+    }
+}
 
 bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
     counts.clear();
@@ -184,14 +258,13 @@ bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
 
     setConnected(stop, counts, "https://nextendo.network/game-stats/sm3dw", "010028600ebda000", false);
     setConnected(stop, counts, "https://nextendo.network/game-stats/jamboree", "0100965017338000", true);
-    setConnected(stop, counts, "https://nextendo.network/game-stats/stardew", "0100e65002bb8000", true);
     setConnected(stop, counts, "https://nextendo.network/game-stats/kirby", "0100a8e016236000", true);
     setConnected(stop, counts, "https://nextendo.network/game-stats/justdance22", "0100ea6014bb8000", true);
 
     if (!stop.load()) {
         for (const char* id : {"0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000",
                 "0100b3c014bda000", "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000",
-                "0100227010460000", "0100e46006708000", "01001cc01b2d4000"})
+                "0100227010460000", "0100e46006708000", "01001cc01b2d4000", "0100e65002bb8000"})
             counts.erase(id);
         std::string catalog;
         if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", catalog, stop, 5) == 200)
@@ -222,6 +295,16 @@ bool loadCounts(const std::atomic<bool>& stop, Counts& counts) {
             jsonOnline(sr2) && sr2.find("native_transport_connections") != std::string::npos &&
             jsonInt(sr2, "players", n) && n >= 0 && n <= 50000)
             counts["01004cc023582000"] = n;
+    }
+    if (!stop.load()) {
+        AppConfig cfg;
+        if (cfg.load(kSharedConfigPath) && !cfg.access_token.empty()) {
+            httpCap = 2 * 1024 * 1024;
+            std::string live;
+            if (httpGet("https://nextendo.network/service-catalog/v1/status/live", live, stop, 20, cfg.access_token.c_str()) == 200)
+                applyLiveCounts(live, counts);
+            httpCap = 262144;
+        }
     }
     return true;
 }

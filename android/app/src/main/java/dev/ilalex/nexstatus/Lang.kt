@@ -9,6 +9,10 @@ enum class MainTab { Games, Account }
 data class Copy(
     val online: String,
     val empty: String,
+    val offline: String,
+    val noStatus: String,
+    val serversTitle: String,
+    val offlineShort: String,
     val searchingServers: String,
     val gamesWithPlayers: (Int, String) -> String,
     val playersWord: (Int) -> String,
@@ -81,6 +85,10 @@ fun copyFor(russian: Boolean): Copy {
         return Copy(
             online = "онлайн",
             empty = "Пусто",
+            offline = "Не в сети",
+            noStatus = "Нет статуса",
+            serversTitle = "Серверов",
+            offlineShort = "Оффлайн",
             searchingServers = "Ищем серверы",
             gamesWithPlayers = { n, word -> "$n $word с игроками" },
             playersWord = ::playersWordRu,
@@ -142,6 +150,10 @@ fun copyFor(russian: Boolean): Copy {
     return Copy(
         online = "online",
         empty = "Empty",
+        offline = "Offline",
+        noStatus = "No status",
+        serversTitle = "Servers",
+        offlineShort = "Offline",
         searchingServers = "Looking for servers",
         gamesWithPlayers = { n, word -> "$n $word with players" },
         playersWord = { n -> if (n == 1) "player" else "players" },

@@ -135,8 +135,8 @@ static bool httpGet(const char* url, const char* ip, std::string& body, const ch
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSec);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeoutSec > 4 ? 4L : timeoutSec);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     struct curl_slist* resolve = nullptr;
@@ -154,7 +154,7 @@ static bool httpGet(const char* url, const char* ip, std::string& body, const ch
     g_deadline = 0;
     long http = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
-    curl_easy_cleanup(curl);
+        curl_easy_cleanup(curl);
     curl_slist_free_all(resolve);
     curl_slist_free_all(headers);
     if (http >= 400 || body.empty()) return false;
@@ -228,13 +228,15 @@ static const CatalogItem kCatalog[] = {
     {"Friday the 13th: The Game", "010092a00c4b6000"},
     {"Monster Hunter Rise", "0100b04011742000"},
     {"Miitopia", "01003da010e8a000"},
+    {"Portal 2", "0100abd01785c000"},
     {"Game Builder Garage", "0100fa5010788000"},
     {"Zombie Army 4: Dead War", "01000bf0152fa000"},
 };
 
 static const char* kServiceIds =
     "0100d870045b6000,01008d300c50c000,0100c62011050000,010012f017576000,0100b3c014bda000,"
-    "0100fcf002a58000,0100ab401f136000,01003fb00c5a8000,0100227010460000,0100e46006708000,01001cc01b2d4000";
+    "0100fcf002a58000,0100ab401f136000,01003fb00c5a8000,0100227010460000,0100e46006708000,01001cc01b2d4000,"
+    "0100e65002bb8000";
 
 using Counts = std::map<std::string, int>;
 
@@ -482,6 +484,76 @@ static bool openNet(Net& net, char* ip, size_t ipLen) {
     return false;
 }
 
+static std::string loadToken();
+
+static bool detailedTitle(const std::string& id) {
+    const char* ids[] = {
+        "0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000", "0100b3c014bda000",
+        "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000", "0100227010460000", "0100e46006708000",
+        "01001cc01b2d4000", "0100e65002bb8000", "0100ea6014bb8000",
+    };
+    for (const char* item : ids) if (id == item) return true;
+    return false;
+}
+
+static size_t matchEnd(const std::string& body, size_t open, char left, char right) {
+    bool str = false;
+    bool esc = false;
+    int depth = 0;
+    for (size_t i = open; i < body.size(); ++i) {
+        const char c = body[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') str = true;
+        else if (c == left) ++depth;
+        else if (c == right && --depth == 0) return i;
+    }
+    return std::string::npos;
+}
+
+static void applyLiveCounts(const std::string& body, Counts& counts) {
+    const char* ids[] = {
+        "0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000", "0100b3c014bda000",
+        "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000", "0100227010460000", "0100e46006708000",
+        "01001cc01b2d4000", "0100e65002bb8000", "0100ea6014bb8000",
+    };
+    for (const char* id : ids) {
+        const std::string needle = std::string("\"") + id + "\"";
+        for (size_t at = 0; (at = body.find(needle, at)) != std::string::npos; at += needle.size()) {
+            const auto open = body.rfind('{', at);
+            if (open == std::string::npos) continue;
+            const auto close = matchEnd(body, open, '{', '}');
+            if (close == std::string::npos || close < at) continue;
+            const std::string game = body.substr(open, close - open + 1);
+            if (game.find("\"players\"") == std::string::npos || game.find("\"lobbies\"") == std::string::npos) continue;
+            const auto titlesAt = game.find("\"titles\"");
+            const auto titlesOpen = titlesAt == std::string::npos ? std::string::npos : game.find('[', titlesAt);
+            const auto titlesClose = titlesOpen == std::string::npos ? std::string::npos : matchEnd(game, titlesOpen, '[', ']');
+            if (titlesClose == std::string::npos) continue;
+            int quotes = 0;
+            for (size_t i = titlesOpen; i <= titlesClose; ++i) if (game[i] == '"') ++quotes;
+            if (quotes != 2) continue;
+            const auto playersAt = game.find("\"players\"");
+            const auto playersOpen = game.find('[', playersAt);
+            const auto playersClose = playersOpen == std::string::npos ? std::string::npos : matchEnd(game, playersOpen, '[', ']');
+            if (playersClose == std::string::npos) continue;
+            int names = 0;
+            for (size_t p = playersOpen; p < playersClose; ) {
+                p = game.find("\"name\"", p);
+                if (p == std::string::npos || p >= playersClose) break;
+                ++names;
+                p += 6;
+            }
+            counts[id] = names;
+            break;
+        }
+    }
+}
+
 static void fetchOnce() {
     {
         std::lock_guard<std::mutex> lock(g_mu);
@@ -534,14 +606,13 @@ static void fetchOnce() {
 
     setConnected(ip, counts, "https://nextendo.network/game-stats/sm3dw", "010028600ebda000", false);
     setConnected(ip, counts, "https://nextendo.network/game-stats/jamboree", "0100965017338000", true);
-    setConnected(ip, counts, "https://nextendo.network/game-stats/stardew", "0100e65002bb8000", true);
     setConnected(ip, counts, "https://nextendo.network/game-stats/kirby", "0100a8e016236000", true);
     setConnected(ip, counts, "https://nextendo.network/game-stats/justdance22", "0100ea6014bb8000", true);
 
     if (!stopped()) {
         for (const char* id : {"0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000",
                 "0100b3c014bda000", "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000",
-                "0100227010460000", "0100e46006708000", "01001cc01b2d4000"})
+                "0100227010460000", "0100e46006708000", "01001cc01b2d4000", "0100e65002bb8000"})
             counts.erase(id);
         if (httpGet("https://nextendo.network/service-catalog/v1/online-counts", ip, body, nullptr, 5))
             readIds(body, counts, kServiceIds, false);
@@ -572,6 +643,17 @@ static void fetchOnce() {
             jsonInt(body, "players", n) && n >= 0 && n <= 50000)
             counts["01004cc023582000"] = n;
         body.clear();
+    }
+    if (!stopped()) {
+        const std::string token = loadToken();
+        if (!token.empty()) {
+            g_bodyCap = 1024 * 1024;
+            if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
+                applyLiveCounts(body, counts);
+            body.clear();
+            body.shrink_to_fit();
+            g_bodyCap = 256 * 1024;
+        }
     }
     closeNet(net);
     show();
@@ -806,16 +888,22 @@ static void fetchDetail() {
     g_bodyCap = 1024 * 1024;
     std::string body;
     std::string game;
-    if (httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str(), 20, true))
+    const bool detailed = detailedTitle(titleId);
+    if (detailed && g_detail.load() && !g_abort.load() &&
+        httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
         game = gameObject(body, titleId);
     body.clear();
     body.shrink_to_fit();
-    if (game.empty() && g_detail.load() && !g_abort.load()) {
-        if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
-            game = gameObject(body, titleId);
-        body.clear();
-        body.shrink_to_fit();
-    }
+    if (game.empty() && g_detail.load() && !g_abort.load() &&
+        httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str(), 20, true))
+        game = gameObject(body, titleId);
+    body.clear();
+    body.shrink_to_fit();
+    if (!detailed && game.empty() && g_detail.load() && !g_abort.load() &&
+        httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
+        game = gameObject(body, titleId);
+    body.clear();
+    body.shrink_to_fit();
     g_deadline = 0;
     closeNet(net);
     if (!g_detail.load() || g_abort.load()) return;
@@ -904,10 +992,10 @@ class GameGui : public tsl::Gui {
         }
         const int count = g_detailPlayers;
         list->addItem(new tsl::elm::ListItem(std::to_string(count) + (count == 1 ? " player" : " players")));
-        if (!snap.note.empty())
-            list->addItem(new tsl::elm::ListItem(snap.note));
-        if (!snap.rooms.empty()) {
-            list->addItem(new tsl::elm::CategoryHeader("Lobbies"));
+        list->addItem(new tsl::elm::CategoryHeader("Lobbies"));
+        if (snap.rooms.empty()) {
+            list->addItem(new tsl::elm::ListItem(snap.note.empty() ? "No lobbies right now." : snap.note.c_str()));
+        } else {
             for (const auto& room : snap.rooms) {
                 auto* item = new tsl::elm::ListItem(room.title, room.places);
                 const std::string title = room.title;

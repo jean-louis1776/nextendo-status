@@ -379,19 +379,37 @@ fun HomeScreen(
                             "${copy.playersWord(home.players)} ${copy.online}",
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
                         )
+                        Spacer(Modifier.height(14.dp))
+                        Text(copy.serversTitle, fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val onlineCount = games.count { it.state == ServerState.Online }
+                            Text(
+                                "${copy.online.replaceFirstChar { it.uppercase() }}: $onlineCount",
+                                color = onlineColor(),
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                "·",
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                fontWeight = FontWeight.Black,
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                            Text(
+                                "${copy.offlineShort}: ${games.size - onlineCount}",
+                                color = Color(0xFFFF6B81),
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
                     }
                     val subtitle = when {
                         home.error.isNotEmpty() && games.isEmpty() -> home.error
                         home.updated.isEmpty() -> ""
-                        else -> {
-                            val busy = games.count { it.players > 0 }
-                            "${copy.gamesWithPlayers(busy, copy.gamesWord(busy))}  ·  ${home.updated}"
-                        }
+                        else -> home.updated
                     }
                     if (subtitle.isNotEmpty()) {
                         Text(
                             subtitle,
-                            modifier = Modifier.padding(top = 12.dp),
+                            modifier = Modifier.padding(top = 8.dp),
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
                             style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center,
@@ -438,17 +456,27 @@ private fun GameCard(game: Game, copy: Copy, haze: HazeState, glass: GlassStyle,
             modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)),
             contentScale = ContentScale.Crop,
         )
+        val status = when (game.state) {
+            ServerState.Online -> copy.online.replaceFirstChar { it.uppercase() }
+            ServerState.Offline -> copy.offline
+            ServerState.NoStatus -> copy.noStatus
+        }
+        val statusColor = when (game.state) {
+            ServerState.Online -> live
+            ServerState.Offline -> Color(0xFFFF6B81)
+            ServerState.NoStatus -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(game.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                if (game.players > 0) copy.online.replaceFirstChar { it.uppercase() } else copy.empty,
-                color = if (game.players > 0) live else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            Text(status, color = statusColor, style = MaterialTheme.typography.bodyMedium)
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(game.players.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Text(copy.playersWord(game.players), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            if (game.state == ServerState.Online) {
+                Text(game.players.toString(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(copy.playersWord(game.players), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            } else {
+                Text("—", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }

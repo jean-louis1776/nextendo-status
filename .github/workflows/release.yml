@@ -145,12 +145,12 @@ jobs:
           body: |
             ## What's new
 
-            Switch homebrew and the Ultrahand overlay are 1.2.0.
+            Switch homebrew and the Ultrahand overlay are 1.2.1. The Android app is 1.2.0.
 
-            - The overlay lists the same servers as the homebrew app. Only games with at least one player are shown.
-            - **A** on a game shows the player count, lobbies with the mode name, and every player. **A** on a lobby shows who is in that room.
-            - **Refresh** reloads the list or the open game. Nothing reloads on its own.
-            - Signed out, **A** explains how to sign in through the NexStatus homebrew app from the Homebrew Menu.
+            - The homebrew list includes all 63 games from the status page, including Portal 2. Servers that do not answer stay in the list as Offline. If a status cannot be read, the game shows No status.
+            - Player counts use the same sources as the website. Catalog games, including Stardew Valley, use the service catalog. When signed in, the number matches the live player list, including someone who is in the game but not in a lobby.
+            - Under the player total, the homebrew app shows Servers, then Online and Offline. Offline includes games with no status, so the two numbers add up to the full list.
+            - The overlay still lists only games with at least one player. A game page always shows Lobbies. If there are none, it says there are no lobbies right now, then lists the players.
 
             Set Ultrahand **Overlay memory** to **8 MB** before opening the overlay. The 4 MB default is too small and can fail to load the overlay or crash Atmosphere.
 
@@ -158,6 +158,6 @@ jobs:
             Extract `nexstatus.zip` at the root of the SD card.
 
             ## Android
-            Install `nexstatus.apk`. This release keeps the Android app at 1.1.6. It shows the same public server counts and, after sign-in, lobbies and players. It checks GitHub for a newer APK on launch.
+            Install `nexstatus.apk`. This release updates the Android app to 1.2.0. It lists all 63 games with Online, Offline, or No status, uses the same counts as the website, and shows Servers with Online and Offline under the player total. It checks GitHub for a newer APK on launch.
           generate_release_notes: true
           fail_on_unmatched_files: false

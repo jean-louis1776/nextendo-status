@@ -37,7 +37,14 @@ import java.util.Base64
 
 private val Context.store by preferencesDataStore("nexstatus")
 
-data class Game(val name: String, val titleId: String, val players: Int)
+enum class ServerState { Online, Offline, NoStatus }
+
+data class Game(
+    val name: String,
+    val titleId: String,
+    val players: Int,
+    val state: ServerState = ServerState.Online,
+)
 
 data class Person(val name: String, val mark: String, val extra: String)
 
@@ -372,7 +379,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshHome() {
         _home.update { it.copy(loading = it.games.isEmpty()) }
-        val next = withContext(Dispatchers.IO) { runCatching { fetchGames() }.getOrNull() }
+        val token = access
+        val next = withContext(Dispatchers.IO) { runCatching { fetchGames(token) }.getOrNull() }
         _home.update { current ->
             if (next == null) {
                 current.copy(
@@ -382,7 +390,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             } else {
                 HomeState(
                     games = next,
-                    players = next.sumOf { it.players },
+                    players = next.sumOf { if (it.state == ServerState.Online) it.players else 0 },
                     updated = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")),
                     loading = false,
                 )
@@ -475,11 +483,17 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
         val body = withContext(Dispatchers.IO) {
             gate.withLock {
-                val main = authed("https://nextendo.network/api/status/live")
-                val extra = authed("https://nextendo.network/service-catalog/v1/status/live")
-                buildString {
-                    if (main?.code == 200) append(main.body)
-                    if (extra?.code == 200) append(extra.body)
+                fun ok(url: String) = authed(url)?.takeIf { it.code == 200 }?.body.orEmpty()
+                val id = game.titleId
+                when {
+                    id in DETAILED -> ok("https://nextendo.network/service-catalog/v1/status/live")
+                    id == KIRBY -> ok("https://nextendo.network/game-stats/kirby-live")
+                    id == UNO -> ok("https://nextendo.network/game-stats/uno-live")
+                    id == WONDER -> {
+                        val wonder = ok("https://nextendo.network/game-stats/wonder-live")
+                        if (extractGame(wonder, id) != null) wonder else ok("https://nextendo.network/api/status/live")
+                    }
+                    else -> ok("https://nextendo.network/api/status/live")
                 }
             }
         }
@@ -722,19 +736,221 @@ private fun readCap(stream: InputStream): String {
     return out.toString(Charsets.UTF_8.name())
 }
 
-private fun fetchGames(): List<Game> {
+private class CatalogTitle(val name: String, val ids: String, val nostatus: Boolean = false)
+
+// Same 63 games as https://nextendo.network/status, including servers that are down.
+private val CATALOG = listOf(
+    CatalogTitle("SpeedRunners 2: King of Speed", "01004cc023582000", nostatus = true),
+    CatalogTitle("SEGA Genesis - Nintendo Classics", "0100b3c014bda000"),
+    CatalogTitle("Just Dance 2022", "0100ea6014bb8000"),
+    CatalogTitle("Mario Kart 8 Deluxe", "0100152000022000"),
+    CatalogTitle("Splatoon 2", "0100f8f0000a2000,01003bc0000a0000,01003c700009c800"),
+    CatalogTitle("Splatoon 3", "0100c2500fc20000"),
+    CatalogTitle("Super Smash Bros. Ultimate", "01006a800016e000"),
+    CatalogTitle("Animal Crossing: New Horizons", "01006f8002326000"),
+    CatalogTitle("Luigi's Mansion 3", "0100dca0064a6000"),
+    CatalogTitle("Minecraft: Nintendo Switch Edition", "01006bd001e06000"),
+    CatalogTitle("ARMS", "01009b500007c000"),
+    CatalogTitle("Mario Tennis Aces", "0100bde00862a000"),
+    CatalogTitle("Super Mario Maker 2", "01009b90006dc000"),
+    CatalogTitle("PAC-MAN 99", "0100ad9012510000"),
+    CatalogTitle("Among Us", "0100b0c013912000"),
+    CatalogTitle("Mario & Sonic at the Olympic Games Tokyo 2020", "010086000e148000"),
+    CatalogTitle("Tetris 99", "010040600c5ce000"),
+    CatalogTitle("Super Mario Bros. 35", "0100277011f1a000"),
+    CatalogTitle("Super Mario Bros. Wonder", "010015100b514000"),
+    CatalogTitle("Clubhouse Games: 51 Worldwide Classics", "010047700d540000"),
+    CatalogTitle("Monster Hunter Generations Ultimate", "0100770008dd8000"),
+    CatalogTitle("Crash Team Racing Nitro-Fueled", "0100f9f00c696000"),
+    CatalogTitle("Diablo III: Eternal Collection", "01001b300b9be000"),
+    CatalogTitle("Mario Party Superstars", "01006fe013472000"),
+    CatalogTitle("Super Mario Party Jamboree", "0100965017338000"),
+    CatalogTitle("Kirby's Dream Buffet", "0100a8e016236000"),
+    CatalogTitle("Stardew Valley", "0100e65002bb8000"),
+    CatalogTitle("Overcooked! 2", "01006fd0080b2000"),
+    CatalogTitle("Pokémon Scarlet and Violet", "0100a3d008c5c000,01008f6008c5e000"),
+    CatalogTitle("Nintendo 64 - Nintendo Classics", "0100c9a00ece6000"),
+    CatalogTitle("NES - Nintendo Classics", "0100d870045b6000"),
+    CatalogTitle("SNES - Nintendo Classics", "01008d300c50c000"),
+    CatalogTitle("Game Boy - Nintendo Classics", "0100c62011050000"),
+    CatalogTitle("Game Boy Advance - Nintendo Classics", "010012f017576000"),
+    CatalogTitle("Pokémon Legends: Z-A", "0100f43008c44000"),
+    CatalogTitle("Pokémon Sword and Shield", "0100abf008968000,01008db008c2c000"),
+    CatalogTitle("Super Monkey Ball Banana Mania", "010001701248c000"),
+    CatalogTitle("Mario Golf: Super Rush", "0100c9c00e25c000"),
+    CatalogTitle("Super Mario 3D World + Bowser's Fury", "010028600ebda000"),
+    CatalogTitle("Super Mario Odyssey", "0100000000010000"),
+    CatalogTitle("METAL GEAR SOLID: Peace Walker", "0100c6f01c4f8000"),
+    CatalogTitle("Mario Strikers: Battle League", "010019401051c000"),
+    CatalogTitle("Minecraft Dungeons II", "0100a7c01b792000"),
+    CatalogTitle("Pokkén Tournament DX", "0100b3f000be2000"),
+    CatalogTitle("Saints Row: The Third - The Full Package", "0100de600beee000"),
+    CatalogTitle("UNO", "0100b6e012ebe000"),
+    CatalogTitle("Dying Light: Platinum Edition", "01008c8012920000"),
+    CatalogTitle("Guilty Gear -Strive-", "0100ab401f136000"),
+    CatalogTitle("Kirby Fighters 2", "0100227010460000"),
+    CatalogTitle("Terraria", "0100e46006708000"),
+    CatalogTitle("Goat Simulator 3", "01001cc01b2d4000"),
+    CatalogTitle("Super Kirby Clash", "01003fb00c5a8000"),
+    CatalogTitle("Ultimate Chicken Horse", "0100fcf002a58000", nostatus = true),
+    CatalogTitle("Crypt of the NecroDancer", "0100cea007d08000", nostatus = true),
+    CatalogTitle("Nintendo Switch Sports", "0100d2f00d5c0000"),
+    CatalogTitle("Monopoly for Nintendo Switch", "01007430037f6000"),
+    CatalogTitle("Dragon Ball FighterZ", "0100a250097f0000"),
+    CatalogTitle("Friday the 13th: The Game", "010092a00c4b6000"),
+    CatalogTitle("Monster Hunter Rise", "0100b04011742000"),
+    CatalogTitle("Miitopia", "01003da010e8a000"),
+    CatalogTitle("Portal 2", "0100abd01785c000"),
+    CatalogTitle("Game Builder Garage", "0100fa5010788000"),
+    CatalogTitle("Zombie Army 4: Dead War", "01000bf0152fa000"),
+)
+
+private const val SM3DW = "010028600ebda000"
+private const val JAMBOREE = "0100965017338000"
+private const val KIRBY = "0100a8e016236000"
+private const val JD = "0100ea6014bb8000"
+private const val UNO = "0100b6e012ebe000"
+private const val CRYPT = "0100cea007d08000"
+private const val SR2 = "01004cc023582000"
+private const val WONDER = "010015100b514000"
+
+// Catalog games whose public count and, once signed in, player list come from the service catalog.
+private val CLASSICS = setOf(
+    "0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000",
+    "0100b3c014bda000", "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000",
+    "0100227010460000", "0100e46006708000", "01001cc01b2d4000", "0100e65002bb8000",
+)
+private val DETAILED = CLASSICS + JD
+
+private fun jsonObject(url: String, headers: Map<String, String> = emptyMap()): JSONObject? {
+    val response = http(url, headers = headers)
+    if (response.code != 200 || response.body.isEmpty()) return null
+    return runCatching { JSONObject(response.body) }.getOrNull()
+}
+
+private fun numbered(json: JSONObject?, key: String): Int? {
+    if (json == null || !json.has(key) || json.isNull(key)) return null
+    val value = json.opt(key)
+    return if (value is Number) value.toInt() else null
+}
+
+private fun fetchGames(token: String): List<Game> {
     val response = http("https://nextendo.network/api/online-counts")
     if (response.code != 200) error("http ${response.code}")
-    val jeux = JSONObject(response.body).optJSONArray("jeux") ?: JSONArray()
-    val games = buildList {
-        for (i in 0 until jeux.length()) {
-            val item = jeux.optJSONObject(i) ?: continue
-            val titles = item.optJSONArray("titres")
-            val id = titles?.optString(0).orEmpty()
-            add(Game(item.optString("nom"), id, item.optInt("joueurs")))
+    val counts = mutableMapOf<String, Int>()
+    val raw = JSONObject(response.body).optJSONObject("counts")
+    if (raw != null) {
+        val keys = raw.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = raw.opt(key)
+            if (value is Number) counts[key] = value.toInt()
         }
     }
-    return games.sortedWith(compareByDescending<Game> { it.players }.thenBy { it.name })
+    val avail = mutableMapOf<String, Boolean>()
+    numbered(jsonObject("https://nextendo.network/game-stats/sm3dw"), "connected")?.let { counts[SM3DW] = it }
+    counts.remove(JAMBOREE)
+    jsonObject("https://nextendo.network/game-stats/jamboree")?.let { stats ->
+        val n = numbered(stats, "connected")
+        if (stats.optBoolean("online") && n != null) counts[JAMBOREE] = n
+    }
+    counts.remove(KIRBY)
+    jsonObject("https://nextendo.network/game-stats/kirby")?.let { stats ->
+        val n = numbered(stats, "connected")
+        if (stats.optBoolean("online") && n != null) counts[KIRBY] = n
+    }
+    counts.remove(JD)
+    avail[JD] = false
+    jsonObject("https://nextendo.network/game-stats/justdance22")?.let { stats ->
+        val n = numbered(stats, "connected")
+        if (stats.optString("game") == "Just Dance 2022" && stats.optString("titleId") == JD &&
+            stats.optBoolean("online") && n != null && n >= 0
+        ) {
+            counts[JD] = n
+            avail[JD] = true
+        }
+    }
+    val catalog = jsonObject("https://nextendo.network/service-catalog/v1/online-counts")?.optJSONObject("counts")
+    for (id in CLASSICS) {
+        counts.remove(id)
+        avail[id] = false
+        val n = numbered(catalog, id)
+        if (n != null && n >= 0) {
+            counts[id] = n
+            avail[id] = true
+        }
+    }
+    jsonObject("https://nextendo.network/game-stats/uno-count")?.let { stats ->
+        val n = numbered(stats, "connected")
+        if (stats.optString("game") == "UNO" && stats.optString("titleId") == UNO && n != null && n >= 0) {
+            counts[UNO] = n
+            avail[UNO] = true
+        }
+    }
+    counts.remove(CRYPT)
+    avail[CRYPT] = false
+    jsonObject("https://nextendo.network/service-catalog/v1/crypt-status")?.let { stats ->
+        if (stats.optString("game") == "Crypt of the NecroDancer" && stats.optString("titleId") == CRYPT &&
+            stats.optBoolean("online") && stats.optString("countScope") == "room_members"
+        ) {
+            avail[CRYPT] = true
+            val n = numbered(stats, "players")
+            if (n != null && n in 0..1024) counts[CRYPT] = n
+        }
+    }
+    counts.remove(SR2)
+    avail[SR2] = false
+    jsonObject("https://nextendo.network/service-catalog/v1/sr2-status")?.let { stats ->
+        if (stats.optString("game") == "SpeedRunners 2: King of Speed" && stats.optString("titleId") == SR2 &&
+            stats.optBoolean("online") && stats.optString("countScope") == "native_transport_connections"
+        ) {
+            avail[SR2] = true
+            val n = numbered(stats, "players")
+            if (n != null && n in 0..50000) counts[SR2] = n
+        }
+    }
+    if (token.isNotEmpty()) {
+        val live = http(
+            "https://nextendo.network/service-catalog/v1/status/live",
+            headers = authHeaders(token),
+        )
+        if (live.code == 200) applyLiveCounts(live.body, counts, avail)
+    }
+    return CATALOG.map { title ->
+        var best = 0
+        var found = false
+        var up = false
+        for (id in title.ids.split(',')) {
+            val n = counts[id]
+            if (n != null) {
+                found = true
+                if (n > best) best = n
+            }
+            if (avail[id] == true) up = true
+        }
+        val online = found || up
+        val state = when {
+            online -> ServerState.Online
+            title.nostatus -> ServerState.NoStatus
+            else -> ServerState.Offline
+        }
+        Game(title.name, title.ids.substringBefore(','), if (found) best else 0, state)
+    }.sortedWith(compareByDescending<Game> { it.players }.thenBy { it.name })
+}
+
+private fun applyLiveCounts(body: String, counts: MutableMap<String, Int>, avail: MutableMap<String, Boolean>) {
+    val games = runCatching { JSONObject(body).optJSONArray("games") }.getOrNull() ?: return
+    for (i in 0 until games.length()) {
+        val game = games.optJSONObject(i) ?: continue
+        val titles = game.optJSONArray("titles") ?: continue
+        if (titles.length() != 1) continue
+        val id = titles.optString(0)
+        if (id !in DETAILED) continue
+        val players = game.optJSONArray("players") ?: continue
+        if (game.optJSONArray("lobbies") == null) continue
+        counts[id] = players.length()
+        avail[id] = true
+    }
 }
 
 private fun describe(body: String, game: Game, copy: Copy): GamePage {

@@ -12,8 +12,8 @@ android {
         applicationId = "dev.ilalex.nexstatus"
         minSdk = 26
         targetSdk = 37
-        versionCode = 8
-        versionName = "1.1.6"
+        versionCode = 9
+        versionName = "1.2.0"
     }
 
     // Stable release key so GitHub OTA APKs can update each other.

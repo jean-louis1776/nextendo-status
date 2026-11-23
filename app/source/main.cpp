@@ -883,6 +883,8 @@ int main(int argc, char** argv) {
     std::vector<ServerRow> serverRows;
     Label bannerTitle;
     Label bannerSub;
+    Label bannerOnline;
+    Label bannerOffline;
     Label bannerTime;
     Label updateTitle;
     Label updateBody;
@@ -984,6 +986,7 @@ int main(int argc, char** argv) {
 
         const int barH = 60;
         const int barY = wh - barH;
+        const int bannerH = 128;
 
         if (servers.ready() && !servers.failed()) {
             const int rev = servers.revision();
@@ -1010,11 +1013,11 @@ int main(int argc, char** argv) {
                     }
                     serverRows.assign(games.size(), {});
                 }
-                int active = 0, playing = 0;
+                int onlineN = 0, playing = 0;
                 bool countsChanged = !bannerTime.tex;
                 for (size_t i = 0; i < games.size(); ++i) {
                     const int kind = games[i].online ? 0 : (games[i].nostatus ? 1 : 2);
-                    if (kind != 2) ++active;
+                    if (kind == 0) ++onlineN;
                     if (games[i].online) playing += games[i].players;
                     ServerRow& row = serverRows[i];
                     if (row.titleId != games[i].titleId) {
@@ -1047,9 +1050,11 @@ int main(int argc, char** argv) {
                     row.iconDone = true;
                 }
                 const std::string head = std::to_string(playing) + (playing == 1 ? " player" : " players");
-                const std::string sub = std::to_string(active) + (active == 1 ? " server active" : " servers active");
+                const int offlineN = static_cast<int>(games.size()) - onlineN;
                 setText(bannerTitle, renderer, font, head.c_str(), white);
-                setText(bannerSub, renderer, hintFont, sub.c_str(), hint);
+                setText(bannerSub, renderer, hintFont, "Servers", hint);
+                setText(bannerOnline, renderer, hintFont, ("Online: " + std::to_string(onlineN)).c_str(), onlineColor);
+                setText(bannerOffline, renderer, hintFont, ("Offline: " + std::to_string(offlineN)).c_str(), offlineColor);
                 if (countsChanged) {
                     const std::string stamp = "Updated at " + consoleClock();
                     setText(bannerTime, renderer, hintFont, stamp.c_str(), hint);
@@ -1073,7 +1078,7 @@ int main(int argc, char** argv) {
                     focus = found >= 0 ? found : 0;
                     const int rows = (static_cast<int>(serverRows.size()) + 1) / 2;
                     const float content = rows > 0 ? rows * 122.f - 10.f : 0.f;
-                    const float view = static_cast<float>(barY - (16 + 84 + 20) - 24);
+                    const float view = static_cast<float>(barY - (16 + bannerH + 20) - 24);
                     const float maxScroll = std::max(0.f, content - view);
                     if (serverScroll < 0) serverScroll = 0;
                     if (serverScroll > maxScroll) serverScroll = maxScroll;
@@ -1196,7 +1201,7 @@ int main(int argc, char** argv) {
                 moveTick = nowTick + wait;
                 if (focus >= 0) {
                     const int pitch = 112 + 10;
-                    const int listTop = 16 + 84 + 20;
+                    const int listTop = 16 + bannerH + 20;
                     const int row = focus / 2;
                     const float top = static_cast<float>(row * pitch);
                     const float bottom = top + 112;
@@ -1362,7 +1367,7 @@ int main(int argc, char** argv) {
                 const int cardH = 112;
                 const int gap = 10;
                 const int margin = 16;
-                const int listTop = margin + 84 + 20;
+                const int listTop = margin + bannerH + 20;
                 const int pitch = cardH + gap;
                 const int cardW = (ww - margin * 2 - gap) / 2;
                 const u64 nowList = armGetSystemTick();
@@ -1377,7 +1382,7 @@ int main(int argc, char** argv) {
                 const int off = scrollI - first * pitch;
                 const int rows = (barY - listTop) / pitch + 2;
                 const int iconSize = 80;
-                const int bannerBottom = margin + 84;
+                const int bannerBottom = margin + bannerH;
                 SDL_Rect listClip{0, bannerBottom, ww, barY - bannerBottom};
                 SDL_RenderSetClipRect(renderer, &listClip);
                 for (int r = 0; r < rows; ++r) {
@@ -1414,22 +1419,27 @@ int main(int argc, char** argv) {
                     }
                 }
                 SDL_RenderSetClipRect(renderer, nullptr);
-                SDL_Rect banner{margin, margin, ww - margin * 2, 84};
+                SDL_Rect banner{margin, margin, ww - margin * 2, bannerH};
                 SDL_SetRenderDrawColor(renderer, 50, 50, 54, 255);
                 fillRound(renderer, banner, 28);
                 SDL_SetRenderDrawColor(renderer, 120, 196, 130, 255);
-                const int bannerTextY = banner.y + (banner.h - bannerTitle.h) / 2;
+                const int blockH = bannerTitle.h + 4 + bannerSub.h + 4 + bannerOnline.h;
+                const int bannerTextY = banner.y + (banner.h - blockH) / 2;
                 fillDisk(renderer, banner.x + 28, bannerTextY + bannerTitle.h / 2, 7);
                 drawLabel(renderer, bannerTitle, banner.x + 46, bannerTextY);
-                const int rightH = bannerSub.h + 2 + bannerTime.h;
-                const int rightY = bannerTextY + (bannerTitle.h - rightH) / 2;
+                drawLabel(renderer, bannerSub, banner.x + 46, bannerTextY + bannerTitle.h + 4);
+                const int statY = bannerTextY + bannerTitle.h + 4 + bannerSub.h + 4;
+                drawLabel(renderer, bannerOnline, banner.x + 46, statY);
+                SDL_SetRenderDrawColor(renderer, 230, 230, 234, 255);
+                const int dotX = banner.x + 46 + bannerOnline.w + 14;
+                fillDisk(renderer, dotX, statY + bannerOnline.h / 2, 4);
+                drawLabel(renderer, bannerOffline, dotX + 14, statY);
                 const bool signedIn = !config.access_token.empty();
                 const int pillH = 52;
                 const int pillW = signedIn ? loginName.w + 36 : loginLabel.w + 36;
                 SDL_Rect pill{banner.x + banner.w - 18 - pillW, banner.y + (banner.h - pillH) / 2, pillW, pillH};
                 const int statsRight = pill.x - 18;
-                drawLabel(renderer, bannerSub, statsRight - bannerSub.w, rightY);
-                drawLabel(renderer, bannerTime, statsRight - bannerTime.w, rightY + bannerSub.h + 2);
+                drawLabel(renderer, bannerTime, statsRight - bannerTime.w, banner.y + (banner.h - bannerTime.h) / 2);
                 SDL_SetRenderDrawColor(renderer, 32, 32, 36, 255);
                 fillRound(renderer, pill, pillH / 2);
                 drawLabel(renderer, signedIn ? loginName : loginLabel,
@@ -1584,6 +1594,8 @@ int main(int argc, char** argv) {
     destroyLabel(rightHint);
     destroyLabel(bannerTitle);
     destroyLabel(bannerSub);
+    destroyLabel(bannerOnline);
+    destroyLabel(bannerOffline);
     destroyLabel(bannerTime);
     destroyLabel(updateTitle);
     destroyLabel(updateBody);

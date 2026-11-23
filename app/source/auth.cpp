@@ -529,6 +529,16 @@ LiveChip chipFrom(const std::string& obj, bool withLobby) {
     return chip;
 }
 
+bool detailedTitle(const std::string& id) {
+    const char* ids[] = {
+        "0100d870045b6000", "01008d300c50c000", "0100c62011050000", "010012f017576000", "0100b3c014bda000",
+        "0100fcf002a58000", "0100ab401f136000", "01003fb00c5a8000", "0100227010460000", "0100e46006708000",
+        "01001cc01b2d4000", "0100e65002bb8000", "0100ea6014bb8000",
+    };
+    for (const char* item : ids) if (id == item) return true;
+    return false;
+}
+
 const char* lobbyState(const std::string& state) {
     if (state == "searching") return "Searching";
     if (state == "matched") return "In a match";
@@ -541,7 +551,12 @@ const char* lobbyState(const std::string& state) {
 
 LivePage describeLive(const std::string& body, const std::string& titleId, int onlineCount) {
     LivePage page;
-    const std::string game = gameObject(body, titleId);
+    const auto split = body.find("/*NX*/");
+    const std::string catalog = split == std::string::npos ? std::string{} : body.substr(0, split);
+    const std::string core = split == std::string::npos ? body : body.substr(split + 6);
+    const bool detailed = detailedTitle(titleId);
+    std::string game = gameObject(detailed ? catalog : core, titleId);
+    if (game.empty()) game = gameObject(detailed ? core : catalog, titleId);
     const auto lobbies = game.empty() ? std::vector<std::string>{} : rawObjects(rawArray(game, "lobbies"));
     const auto players = game.empty() ? std::vector<std::string>{} : rawObjects(rawArray(game, "players"));
     if (players.empty()) {
@@ -608,10 +623,13 @@ bool NextendoAuth::fetchLive(const std::string& token, std::string& body, std::s
     }
     const long extraHttp = httpGet("https://nextendo.network/service-catalog/v1/status/live", extra, headers, 40, false, true, nullptr, &stop);
     curl_slist_free_all(headers);
-    if (mainHttp == 200) body += mainBody;
+    if (mainHttp != 200 && extraHttp != 200) {
+        if (mainHttp > 0) error = "HTTP " + std::to_string(mainHttp);
+        else error = curl_easy_strerror(mainErr);
+        return false;
+    }
     if (extraHttp == 200) body += extra;
-    if (!body.empty()) return true;
-    if (mainHttp > 0) error = "HTTP " + std::to_string(mainHttp);
-    else error = curl_easy_strerror(mainErr);
-    return false;
+    body += "\n/*NX*/\n";
+    if (mainHttp == 200) body += mainBody;
+    return true;
 }
