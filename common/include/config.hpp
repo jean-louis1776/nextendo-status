@@ -8,6 +8,7 @@ inline constexpr const char* kSharedConfigPath = "sdmc:/config/nexstatus/config.
 struct AppConfig {
     std::string access_token;
     std::string refresh_token;
+    bool music = true;
 
     bool load(const std::string& path) {
         std::ifstream file(path);
@@ -21,6 +22,7 @@ struct AppConfig {
             if (!value.empty() && value.back() == '\r') value.pop_back();
             if (key == "access_token") access_token = value;
             else if (key == "refresh_token") refresh_token = value;
+            else if (key == "music") music = value != "0";
         }
         return true;
     }
@@ -32,6 +34,7 @@ struct AppConfig {
         if (!file.is_open()) return false;
         file << "access_token=" << access_token << "\n";
         file << "refresh_token=" << refresh_token << "\n";
+        file << "music=" << (music ? "1" : "0") << "\n";
         return true;
     }
 };

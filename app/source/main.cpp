@@ -1,5 +1,6 @@
 #include "auth.h"
 #include "log.hpp"
+#include "music.h"
 #include "qrcodegen.hpp"
 #include "status.h"
 
@@ -872,8 +873,9 @@ int main(int argc, char** argv) {
     const SDL_Color hint{230, 230, 235, 255};
     const SDL_Color credit{145, 145, 150, 255};
 
-    Label leftHint = makeLabel(renderer, hintFont, "(A) Select   (-) Credits   (+) Exit", hint);
+    Label leftHint = makeLabel(renderer, hintFont, "(A) Select   (-) Music   (+) Exit", hint);
     Label creditTitle = makeLabel(renderer, font, "Credits", white);
+    Label creditButton = makeLabel(renderer, hintFont, "Credits", white);
     Label creditWho = makeLabel(renderer, hintFont, "ILALEX (SW-8382-3644-7463)", white);
     Label creditRole = makeLabel(renderer, hintFont, "Author", hint);
     Label creditNx = makeLabel(renderer, hintFont, "Nextendo", white);
@@ -919,6 +921,7 @@ int main(int argc, char** argv) {
     NextendoAuth auth;
     AppConfig config;
     config.load(kSharedConfigPath);
+    musicStart(config.music);
     std::mutex liveMu;
     std::string liveBody;
     std::string liveError;
@@ -1190,6 +1193,8 @@ int main(int argc, char** argv) {
                 const int n = static_cast<int>(serverRows.size());
                 if (focus < 0) {
                     if (dRow > 0 && n > 0) focus = 0;
+                    else if (dCol < 0) focus = -2;
+                    else if (dCol > 0) focus = -1;
                 } else if (dCol) {
                     const int col = focus % 2 + dCol;
                     if (col >= 0 && col < 2 && (focus / 2) * 2 + col < n) focus += dCol;
@@ -1216,8 +1221,17 @@ int main(int argc, char** argv) {
                 }
             }
             if (credits) {
-                if (down & (HidNpadButton_B | HidNpadButton_Minus)) credits = false;
+                if (down & HidNpadButton_B) credits = false;
+                else if (down & HidNpadButton_Minus) {
+                    config.music = !config.music;
+                    config.saveShared();
+                    musicSet(config.music);
+                }
             } else if ((down & HidNpadButton_Minus) && detail < 0 && !account && !pairing) {
+                config.music = !config.music;
+                config.saveShared();
+                musicSet(config.music);
+            } else if ((down & HidNpadButton_A) && detail < 0 && focus == -2) {
                 credits = true;
             } else if ((down & HidNpadButton_A) && detail < 0 && focus < 0) {
                 if (config.access_token.empty()) {
@@ -1275,17 +1289,6 @@ int main(int argc, char** argv) {
             Label out = makeLabel(renderer, hintFont, "(X) Log out", hint);
             drawLabel(renderer, out, (ww - out.w) / 2, y);
             destroyLabel(out);
-        } else if (credits) {
-            int y = 150;
-            drawLabel(renderer, creditTitle, (ww - creditTitle.w) / 2, y);
-            y += creditTitle.h + 36;
-            drawLabel(renderer, creditWho, (ww - creditWho.w) / 2, y);
-            y += creditWho.h + 8;
-            drawLabel(renderer, creditRole, (ww - creditRole.w) / 2, y);
-            y += creditRole.h + 32;
-            drawLabel(renderer, creditNx, (ww - creditNx.w) / 2, y);
-            y += creditNx.h + 8;
-            drawLabel(renderer, creditThanks, (ww - creditThanks.w) / 2, y);
         } else if (pairing) {
             if (qrFor != auth.pairUrl()) {
                 if (qrTex) SDL_DestroyTexture(qrTex);
@@ -1437,31 +1440,58 @@ int main(int argc, char** argv) {
                 const bool signedIn = !config.access_token.empty();
                 const int pillH = 52;
                 const int pillW = signedIn ? loginName.w + 36 : loginLabel.w + 36;
+                const int creditPillW = creditButton.w + 36;
                 SDL_Rect pill{banner.x + banner.w - 18 - pillW, banner.y + (banner.h - pillH) / 2, pillW, pillH};
-                const int statsRight = pill.x - 18;
+                SDL_Rect creditPill{pill.x - 12 - creditPillW, pill.y, creditPillW, pillH};
+                const int statsRight = creditPill.x - 18;
                 drawLabel(renderer, bannerTime, statsRight - bannerTime.w, banner.y + (banner.h - bannerTime.h) / 2);
                 SDL_SetRenderDrawColor(renderer, 32, 32, 36, 255);
+                fillRound(renderer, creditPill, pillH / 2);
                 fillRound(renderer, pill, pillH / 2);
+                drawLabel(renderer, creditButton, creditPill.x + (creditPillW - creditButton.w) / 2, creditPill.y + (pillH - creditButton.h) / 2);
                 drawLabel(renderer, signedIn ? loginName : loginLabel,
                     pill.x + (pillW - (signedIn ? loginName.w : loginLabel.w)) / 2,
                     pill.y + (pillH - (signedIn ? loginName.h : loginLabel.h)) / 2);
-                if (detail < 0 && focus < 0) glowRing(renderer, pill, pillH / 2, static_cast<float>(armGetSystemTick()) / armGetSystemTickFreq());
+                const float glow = static_cast<float>(armGetSystemTick()) / armGetSystemTickFreq();
+                if (detail < 0 && focus == -2) glowRing(renderer, creditPill, pillH / 2, glow);
+                if (detail < 0 && focus == -1) glowRing(renderer, pill, pillH / 2, glow);
             }
+        }
+        if (credits && !account && !pairing) {
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+            SDL_Rect shade{0, 0, ww, barY};
+            SDL_RenderFillRect(renderer, &shade);
+            const int cardW = 760;
+            const int cardH = creditTitle.h + creditWho.h + creditRole.h + creditNx.h + creditThanks.h + 148;
+            SDL_Rect card{(ww - cardW) / 2, (barY - cardH) / 2, cardW, cardH};
+            SDL_SetRenderDrawColor(renderer, 46, 46, 52, 255);
+            fillRound(renderer, card, 28);
+            int y = card.y + 36;
+            drawLabel(renderer, creditTitle, card.x + (cardW - creditTitle.w) / 2, y);
+            y += creditTitle.h + 28;
+            drawLabel(renderer, creditWho, card.x + (cardW - creditWho.w) / 2, y);
+            y += creditWho.h + 8;
+            drawLabel(renderer, creditRole, card.x + (cardW - creditRole.w) / 2, y);
+            y += creditRole.h + 24;
+            drawLabel(renderer, creditNx, card.x + (cardW - creditNx.w) / 2, y);
+            y += creditNx.h + 8;
+            drawLabel(renderer, creditThanks, card.x + (cardW - creditThanks.w) / 2, y);
         }
         SDL_Rect bar{0, barY, ww, barH};
         SDL_SetRenderDrawColor(renderer, 28, 28, 32, 255);
         SDL_RenderFillRect(renderer, &bar);
         SDL_SetRenderDrawColor(renderer, 70, 70, 76, 255);
         SDL_RenderDrawLine(renderer, 0, barY, ww, barY);
-        const int wantHint = credits ? 1 : account ? 5 : pairing ? 1 : detail < 0 ? (focus < 0 ? (config.access_token.empty() ? 2 : 4) : 0) : (config.access_token.empty() ? 3 : 1);
+        const int wantHint = credits ? 1 : account ? 5 : pairing ? 1 : detail < 0 ? (focus == -2 ? 6 : focus < 0 ? (config.access_token.empty() ? 2 : 4) : 0) : (config.access_token.empty() ? 3 : 1);
         if (wantHint != hintMode) {
             hintMode = wantHint;
-            const char* hintText = "(A) Select   (-) Credits   (+) Exit";
+            const char* hintText = "(A) Select   (-) Music   (+) Exit";
             if (wantHint == 1) hintText = "(B) Back";
-            else if (wantHint == 2) hintText = "(A) Sign in   (-) Credits   (+) Exit";
+            else if (wantHint == 2) hintText = "(A) Sign in   (-) Music   (+) Exit";
             else if (wantHint == 3) hintText = "(A) Sign in   (B) Back";
-            else if (wantHint == 4) hintText = "(A) Account   (-) Credits   (+) Exit";
+            else if (wantHint == 4) hintText = "(A) Account   (-) Music   (+) Exit";
             else if (wantHint == 5) hintText = "(X) Log out   (B) Back";
+            else if (wantHint == 6) hintText = "(A) Credits   (-) Music   (+) Exit";
             setText(leftHint, renderer, hintFont, hintText, hint);
         }
         drawLabel(renderer, leftHint, 32, barY + (barH - leftHint.h) / 2);
@@ -1587,6 +1617,7 @@ int main(int argc, char** argv) {
     destroyLabel(detailStatus);
     destroyLabel(leftHint);
     destroyLabel(creditTitle);
+    destroyLabel(creditButton);
     destroyLabel(creditWho);
     destroyLabel(creditRole);
     destroyLabel(creditNx);
@@ -1607,6 +1638,7 @@ int main(int argc, char** argv) {
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
     TTF_Quit();
+    musicStop();
     SDL_Quit();
     if (batteryOn) psmExit();
     sessionLogClose();

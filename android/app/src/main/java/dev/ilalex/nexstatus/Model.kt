@@ -2,7 +2,9 @@ package dev.ilalex.nexstatus
 
 import android.app.Application
 import android.content.Context
+import android.media.MediaPlayer
 import android.net.Uri
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -116,6 +118,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private val codeKey = stringPreferencesKey("code")
     private val avatarKey = stringPreferencesKey("avatar")
     private val langKey = stringPreferencesKey("lang")
+    private val musicKey = booleanPreferencesKey("music")
     private val pendingStateKey = stringPreferencesKey("pending_state")
     private val pendingVerifierKey = stringPreferencesKey("pending_verifier")
     private val gate = Mutex()
@@ -145,6 +148,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val tab: StateFlow<MainTab> = _tab
     private val _langChoice = MutableStateFlow(LangChoice.System)
     val langChoice: StateFlow<LangChoice> = _langChoice
+    private val _music = MutableStateFlow(true)
+    val music: StateFlow<Boolean> = _music
+    private var foreground = true
+    private var player: MediaPlayer? = null
     private val _history = MutableStateFlow(HistoryState())
     val history: StateFlow<HistoryState> = _history
 
@@ -163,6 +170,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 "en" -> LangChoice.English
                 else -> LangChoice.System
             }
+            _music.value = prefs[musicKey] ?: true
+            applyMusic()
             _session.value = Session(
                 prefs[nameKey].orEmpty(),
                 prefs[codeKey].orEmpty(),
@@ -194,6 +203,38 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (tab == MainTab.Account && _session.value.signedIn && _history.value.games.isEmpty()) {
             viewModelScope.launch { loadHistory() }
         }
+    }
+
+    fun setMusic(on: Boolean) {
+        _music.value = on
+        applyMusic()
+        viewModelScope.launch {
+            getApplication<Application>().store.edit { it[musicKey] = on }
+        }
+    }
+
+    fun setForeground(on: Boolean) {
+        foreground = on
+        applyMusic()
+    }
+
+    private fun applyMusic() {
+        val app = getApplication<Application>()
+        val track = player ?: MediaPlayer.create(app, R.raw.nexstatus)?.apply { isLooping = true }
+        player = track
+        if (track == null) return
+        val play = _music.value && foreground
+        if (play) {
+            if (!track.isPlaying) track.start()
+        } else if (track.isPlaying) {
+            track.pause()
+        }
+    }
+
+    override fun onCleared() {
+        player?.release()
+        player = null
+        super.onCleared()
     }
 
     fun setLanguage(choice: LangChoice) {

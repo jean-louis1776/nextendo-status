@@ -69,6 +69,9 @@ data class Copy(
     val historyFailed: String,
     val loadingHistory: String,
     val playHours: (Long) -> String,
+    val music: String,
+    val musicOn: String,
+    val musicOff: String,
 )
 
 fun resolveLang(choice: LangChoice): Boolean {
@@ -145,6 +148,9 @@ fun copyFor(russian: Boolean): Copy {
             historyFailed = "Не удалось загрузить активность.",
             loadingHistory = "Загружаем активность…",
             playHours = ::playHoursRu,
+            music = "Музыка",
+            musicOn = "Включена",
+            musicOff = "Выключена",
         )
     }
     return Copy(
@@ -210,6 +216,9 @@ fun copyFor(russian: Boolean): Copy {
         historyFailed = "Couldn't load play activity.",
         loadingHistory = "Loading play activity…",
         playHours = ::playHoursEn,
+        music = "Music",
+        musicOn = "On",
+        musicOff = "Off",
     )
 }
 

@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     val browser by model.browser.collectAsStateWithLifecycle()
                     val tab by model.tab.collectAsStateWithLifecycle()
                     val langChoice by model.langChoice.collectAsStateWithLifecycle()
+                    val music by model.music.collectAsStateWithLifecycle()
                     val history by model.history.collectAsStateWithLifecycle()
                     val update by updates.state.collectAsStateWithLifecycle()
                     val copy = remember(langChoice) { copyFor(resolveLang(langChoice)) }
@@ -102,7 +103,12 @@ class MainActivity : ComponentActivity() {
                     val lifecycleOwner = LocalLifecycleOwner.current
                     DisposableEffect(lifecycleOwner, model) {
                         val observer = LifecycleEventObserver { _, event ->
-                            if (event == Lifecycle.Event.ON_START) model.onForeground()
+                            if (event == Lifecycle.Event.ON_START) {
+                                model.onForeground()
+                                model.setForeground(true)
+                            } else if (event == Lifecycle.Event.ON_STOP) {
+                                model.setForeground(false)
+                            }
                         }
                         lifecycleOwner.lifecycle.addObserver(observer)
                         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -156,9 +162,11 @@ class MainActivity : ComponentActivity() {
                                                 history,
                                                 copy,
                                                 langChoice,
+                                                music,
                                                 haze,
                                                 glass,
                                                 model::setLanguage,
+                                                model::setMusic,
                                                 { model.signIn(context) },
                                                 model::signOut,
                                                 model::openHistory,

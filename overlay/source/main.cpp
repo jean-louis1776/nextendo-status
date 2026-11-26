@@ -112,7 +112,7 @@ static bool completeJson(const std::string& body) {
     return false;
 }
 
-static bool httpGet(const char* url, const char* ip, std::string& body, const char* token = nullptr, long timeoutSec = 12, bool gzip = false) {
+static bool httpGet(const char* url, const char* ip, std::string& body, const char* token = nullptr, long timeoutSec = 12, bool gzip = false, long* httpOut = nullptr) {
     body.clear();
     CURL* curl = curl_easy_init();
     if (!curl) return false;
@@ -157,6 +157,7 @@ static bool httpGet(const char* url, const char* ip, std::string& body, const ch
         curl_easy_cleanup(curl);
     curl_slist_free_all(resolve);
     curl_slist_free_all(headers);
+    if (httpOut) *httpOut = http;
     if (http >= 400 || body.empty()) return false;
     if (rc == CURLE_OK && http == 200) return true;
     return (http == 200 || http == 0) && completeJson(body);
@@ -647,7 +648,7 @@ static void fetchOnce() {
     if (!stopped()) {
         const std::string token = loadToken();
         if (!token.empty()) {
-            g_bodyCap = 1024 * 1024;
+            g_bodyCap = 2 * 1024 * 1024;
             if (httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
                 applyLiveCounts(body, counts);
             body.clear();
@@ -767,31 +768,43 @@ static std::vector<std::string> rawObjects(const std::string& arr, size_t limit)
     return out;
 }
 
-static bool sameId(const std::string& body, size_t at, const std::string& id) {
-    if (at == 0 || at + id.size() >= body.size() || body[at - 1] != '"' || body[at + id.size()] != '"') return false;
-    for (size_t i = 0; i < id.size(); ++i) {
-        unsigned char a = static_cast<unsigned char>(body[at + i]);
-        unsigned char b = static_cast<unsigned char>(id[i]);
-        if (a >= 'A' && a <= 'F') a = static_cast<unsigned char>(a + 32);
-        if (b >= 'A' && b <= 'F') b = static_cast<unsigned char>(b + 32);
-        if (a != b) return false;
-    }
-    return true;
-}
-
 static std::string gameObject(const std::string& body, const std::string& titleId) {
     if (titleId.empty()) return {};
+    const std::string needle = "\"" + titleId + "\"";
+    bool str = false;
+    bool esc = false;
+    std::vector<size_t> opens;
     std::string best;
-    for (size_t at = 0; at + titleId.size() < body.size(); ++at) {
-        if (!sameId(body, at, titleId)) continue;
-        const auto open = body.rfind('{', at);
-        if (open == std::string::npos) continue;
-        const auto close = matchClose(body, open);
-        if (close == std::string::npos) continue;
-        std::string game = body.substr(open, close - open + 1);
-        if ((game.find("\"lobbies\"") != std::string::npos || game.find("\"players\"") != std::string::npos) && game.size() > best.size())
-            best = std::move(game);
-        at += titleId.size();
+    int bestNames = -1;
+    for (size_t i = 0; i < body.size(); ++i) {
+        const char c = body[i];
+        if (str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"') {
+            if (!opens.empty() && body.compare(i, needle.size(), needle) == 0) {
+                for (size_t n = opens.size(); n-- > 0; ) {
+                    const size_t close = matchClose(body, opens[n]);
+                    if (close == std::string::npos || close < i) continue;
+                    const std::string game = body.substr(opens[n], close - opens[n] + 1);
+                    if (game.find("\"lobbies\"") == std::string::npos && game.find("\"players\"") == std::string::npos) continue;
+                    int names = 0;
+                    for (size_t p = 0; (p = game.find("\"name\"", p)) != std::string::npos; p += 6) ++names;
+                    if (names > bestNames) {
+                        bestNames = names;
+                        best = game;
+                    }
+                    break;
+                }
+            }
+            str = true;
+            continue;
+        }
+        if (c == '{') opens.push_back(i);
+        else if (c == '}' && !opens.empty()) opens.pop_back();
     }
     return best;
 }
@@ -850,6 +863,90 @@ static std::string loadToken() {
     return token;
 }
 
+static bool refreshAccess(const char* ip, std::string& access) {
+    std::string refresh;
+    tsl::hlp::doWithSDCardHandle([&] {
+        AppConfig cfg;
+        if (cfg.load(kSharedConfigPath)) refresh = cfg.refresh_token;
+    });
+    if (refresh.empty()) return false;
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    char* esc = curl_easy_escape(curl, refresh.c_str(), 0);
+    if (!esc) {
+        curl_easy_cleanup(curl);
+        return false;
+    }
+    const std::string form = std::string("grant_type=refresh_token&client_id=nxc_dyNRS0L9SLND&refresh_token=") + esc;
+    curl_free(esc);
+    const size_t oldCap = g_bodyCap;
+    g_bodyCap = 64 * 1024;
+    std::string response;
+    curl_slist* headers = curl_slist_append(nullptr, "Content-Type: application/x-www-form-urlencoded");
+    curl_slist* resolve = nullptr;
+    if (ip != nullptr && ip[0] != '\0') {
+        char line[80];
+        std::snprintf(line, sizeof line, "nextendo.network:443:%s", ip);
+        resolve = curl_slist_append(nullptr, line);
+        curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve);
+    }
+    curl_easy_setopt(curl, CURLOPT_URL, "https://nextendo.network/oauth/token");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, form.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeBody);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "NexStatus");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    const u64 freq = armGetSystemTickFreq();
+    g_deadline = armGetSystemTick() + (freq ? freq * 15 : 0);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlAbort);
+    const CURLcode rc = curl_easy_perform(curl);
+    g_deadline = 0;
+    long http = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    curl_slist_free_all(resolve);
+    g_bodyCap = oldCap;
+    if (rc != CURLE_OK || http < 200 || http >= 300) return false;
+    const std::string next = rawString(response, "access_token");
+    if (next.empty()) return false;
+    const std::string rotated = rawString(response, "refresh_token");
+    bool saved = false;
+    tsl::hlp::doWithSDCardHandle([&] {
+        AppConfig cfg;
+        cfg.load(kSharedConfigPath);
+        cfg.access_token = next;
+        cfg.refresh_token = rotated.empty() ? refresh : rotated;
+        saved = cfg.saveShared();
+    });
+    if (!saved) return false;
+    access = std::move(next);
+    return true;
+}
+
+static bool pullGame(const char* url, const char* ip, std::string& token, const std::string& titleId, std::string& game) {
+    if (!g_detail.load() || g_abort.load()) return false;
+    std::string body;
+    long code = 0;
+    bool ok = httpGet(url, ip, body, token.c_str(), 20, true, &code);
+    if (code == 401 && refreshAccess(ip, token)) {
+        body.clear();
+        ok = httpGet(url, ip, body, token.c_str(), 20, true, &code);
+    }
+    if (ok) game = gameObject(body, titleId);
+    body.clear();
+    body.shrink_to_fit();
+    return !game.empty();
+}
+
 static void fetchDetail() {
     std::string titleId;
     std::string token;
@@ -883,28 +980,16 @@ static void fetchDetail() {
         publishDetail(std::move(page));
         return;
     }
-    const u64 freq = armGetSystemTickFreq();
-    g_deadline = armGetSystemTick() + (freq ? freq * 20 : 0);
-    g_bodyCap = 1024 * 1024;
-    std::string body;
+    g_bodyCap = 2 * 1024 * 1024;
     std::string game;
     const bool detailed = detailedTitle(titleId);
-    if (detailed && g_detail.load() && !g_abort.load() &&
-        httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
-        game = gameObject(body, titleId);
-    body.clear();
-    body.shrink_to_fit();
-    if (game.empty() && g_detail.load() && !g_abort.load() &&
-        httpGet("https://nextendo.network/api/status/live", ip, body, token.c_str(), 20, true))
-        game = gameObject(body, titleId);
-    body.clear();
-    body.shrink_to_fit();
-    if (!detailed && game.empty() && g_detail.load() && !g_abort.load() &&
-        httpGet("https://nextendo.network/service-catalog/v1/status/live", ip, body, token.c_str(), 20, true))
-        game = gameObject(body, titleId);
-    body.clear();
-    body.shrink_to_fit();
-    g_deadline = 0;
+    if (detailed)
+        pullGame("https://nextendo.network/service-catalog/v1/status/live", ip, token, titleId, game);
+    if (game.empty())
+        pullGame("https://nextendo.network/api/status/live", ip, token, titleId, game);
+    if (!detailed && game.empty())
+        pullGame("https://nextendo.network/service-catalog/v1/status/live", ip, token, titleId, game);
+    g_bodyCap = 256 * 1024;
     closeNet(net);
     if (!g_detail.load() || g_abort.load()) return;
     if (game.empty()) {

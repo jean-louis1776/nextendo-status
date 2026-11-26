@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -705,9 +707,11 @@ fun AccountScreen(
     history: HistoryState,
     copy: Copy,
     lang: LangChoice,
+    music: Boolean,
     haze: HazeState,
     glass: GlassStyle,
     onLanguage: (LangChoice) -> Unit,
+    onMusic: (Boolean) -> Unit,
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
     onAllGames: () -> Unit,
@@ -844,6 +848,22 @@ fun AccountScreen(
             }
         }
         item {
+            Row(
+                Modifier.fillMaxWidth().glass(haze, glass).tap { onMusic(!music) }.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(copy.music, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (music) copy.musicOn else copy.musicOff,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                MusicSwitch(music)
+            }
+        }
+        item {
             Column(Modifier.fillMaxWidth().glass(haze, glass).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text(copy.aboutApp, fontWeight = FontWeight.SemiBold)
                 AboutRow(copy.application, "NexStatus")
@@ -976,6 +996,27 @@ private fun HistoryRow(
             copy.playHours(game.seconds),
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun MusicSwitch(on: Boolean) {
+    val shift by animateDpAsState(if (on) 20.dp else 0.dp, spring(stiffness = Spring.StiffnessMediumLow), label = "music")
+    val track = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
+    Box(
+        Modifier
+            .size(52.dp, 32.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(track)
+            .padding(3.dp),
+    ) {
+        Box(
+            Modifier
+                .offset(x = shift)
+                .size(26.dp)
+                .clip(CircleShape)
+                .background(Color.White),
         )
     }
 }
