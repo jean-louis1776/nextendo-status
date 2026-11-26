@@ -5,8 +5,8 @@
 Switch homebrew and overlay. Android is 1.2.1.
 
 - The overlay renews an expired sign-in token on its own and loads lobbies again. The game list was unaffected, because it does not use that token.
-- Background music is included in the homebrew app and on Android. It starts on, and the choice is remembered. Minus turns it off and on in the homebrew app. On Android, Account has a Music switch under Language.
-- Homebrew music is decoded ahead of playback, so it no longer stutters.
+- Background music is included in the homebrew app and on Android. It starts on, and the choice is remembered. Minus turns it off and on in the homebrew app. On Android, Account has a Music switch under Language. The Android track pauses while the app is in the background.
+- On the console the track is decoded ahead of playback on its own thread, so the interface stays responsive while the music plays.
 - Credits open from a button on the homebrew banner, in a card over the list.
 
 Set Ultrahand **Overlay memory** to **8 MB** before opening the overlay. The 4 MB default is too small and can fail to load the overlay or crash Atmosphere.
