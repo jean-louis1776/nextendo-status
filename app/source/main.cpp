@@ -128,10 +128,10 @@ static void jpegExit(j_common_ptr cinfo) {
     longjmp(reinterpret_cast<JpegError*>(cinfo->err)->jump, 1);
 }
 
-static SDL_Texture* textureFromRgb(SDL_Renderer* renderer, int w, int h, const unsigned char* rgb) {
+static SDL_Texture* textureFromRgb(SDL_Renderer* renderer, int w, int h, const unsigned char* rgb, int corner = 0) {
     if (!renderer || w <= 0 || h <= 0 || w > 2048 || h > 2048 || !rgb) return nullptr;
     std::vector<unsigned char> rgba(static_cast<size_t>(w) * h * 4);
-    const int rad = std::max(1, std::min(w, h) / 7);
+    const int rad = corner > 0 ? corner : std::max(1, std::min(w, h) / 7);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int dx = 0, dy = 0;
@@ -164,7 +164,9 @@ static SDL_Texture* textureFromRgb(SDL_Renderer* renderer, int w, int h, const u
     return tex;
 }
 
-static SDL_Texture* textureFromJpeg(SDL_Renderer* renderer, const std::string& jpeg) {
+static SDL_Texture* textureCircleRgb(SDL_Renderer* renderer, int w, int h, const unsigned char* rgb);
+
+static SDL_Texture* textureFromJpeg(SDL_Renderer* renderer, const std::string& jpeg, bool circle = false) {
     if (jpeg.size() < 4) return nullptr;
     jpeg_decompress_struct cinfo{};
     JpegError err{};
@@ -196,7 +198,21 @@ static SDL_Texture* textureFromJpeg(SDL_Renderer* renderer, const std::string& j
     }
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
+    if (circle) return textureCircleRgb(renderer, w, h, rgb.data());
     return textureFromRgb(renderer, w, h, rgb.data());
+}
+
+static SDL_Texture* textureCircleRgb(SDL_Renderer* renderer, int w, int h, const unsigned char* rgb) {
+    const int side = std::min(w, h);
+    const int ox = (w - side) / 2;
+    const int oy = (h - side) / 2;
+    std::vector<unsigned char> square(static_cast<size_t>(side) * side * 3);
+    for (int row = 0; row < side; ++row)
+        std::memcpy(
+            square.data() + static_cast<size_t>(row) * side * 3,
+            rgb + (static_cast<size_t>(oy + row) * w + ox) * 3,
+            static_cast<size_t>(side) * 3);
+    return textureFromRgb(renderer, side, side, square.data(), side / 2);
 }
 
 static void fillRound(SDL_Renderer* renderer, SDL_Rect box, int rad) {
@@ -221,76 +237,102 @@ static void fillRound(SDL_Renderer* renderer, SDL_Rect box, int rad) {
     }
 }
 
-static bool inRound(int x, int y, SDL_Rect box, int rad) {
-    if (x < box.x || y < box.y || x >= box.x + box.w || y >= box.y + box.h) return false;
-    const int left = box.x + rad;
-    const int right = box.x + box.w - 1 - rad;
-    const int top = box.y + rad;
-    const int bottom = box.y + box.h - 1 - rad;
-    int cx = x;
-    int cy = y;
-    if (x < left && y < top) { cx = left; cy = top; }
-    else if (x > right && y < top) { cx = right; cy = top; }
-    else if (x < left && y > bottom) { cx = left; cy = bottom; }
-    else if (x > right && y > bottom) { cx = right; cy = bottom; }
-    else return true;
-    const int dx = x - cx;
-    const int dy = y - cy;
-    return dx * dx + dy * dy <= rad * rad;
+static void glassFill(SDL_Renderer* renderer, SDL_Rect box, int rad, Uint8 alpha) {
+    SDL_SetRenderDrawColor(renderer, 22, 22, 24, alpha);
+    fillRound(renderer, box, rad);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 42);
+    SDL_RenderDrawLine(renderer, box.x + rad, box.y + 1, box.x + box.w - rad, box.y + 1);
 }
 
-static void conicColor(float cssDeg, int& r, int& g, int& b) {
-    float t = std::fmod(cssDeg - 135.f, 360.f);
-    if (t < 0) t += 360.f;
-    struct Stop { float at; int r, g, b; };
-    static const Stop stops[] = {
-        {0.f, 255, 255, 255},
-        {70.f, 255, 90, 101},
-        {180.f, 168, 123, 255},
-        {270.f, 69, 196, 255},
-        {360.f, 255, 255, 255},
+static void strokeRound(SDL_Renderer* renderer, SDL_Rect box, int rad, int thick) {
+    if (box.w <= 0 || box.h <= 0) return;
+    if (thick < 1) thick = 1;
+    SDL_Rect inner{box.x + thick, box.y + thick, box.w - thick * 2, box.h - thick * 2};
+    const int innerRad = std::max(0, rad - thick);
+    auto span = [](SDL_Rect b, int r, int y, int& x0, int& x1) {
+        if (y < b.y || y >= b.y + b.h) return false;
+        int inset = 0;
+        if (r > 0 && y < b.y + r) {
+            const int dy = b.y + r - y;
+            inset = r - static_cast<int>(std::sqrt(std::max(0, r * r - dy * dy)));
+        } else if (r > 0 && y > b.y + b.h - 1 - r) {
+            const int dy = y - (b.y + b.h - 1 - r);
+            inset = r - static_cast<int>(std::sqrt(std::max(0, r * r - dy * dy)));
+        }
+        x0 = b.x + inset;
+        x1 = b.x + b.w - inset;
+        return x1 > x0;
     };
-    const Stop* a = &stops[0];
-    const Stop* c = &stops[1];
-    for (int i = 0; i < 4; ++i) {
-        if (t >= stops[i].at && t <= stops[i + 1].at) {
-            a = &stops[i];
-            c = &stops[i + 1];
-            break;
+    for (int y = box.y; y < box.y + box.h; ++y) {
+        int ox0 = 0, ox1 = 0, ix0 = 0, ix1 = 0;
+        if (!span(box, rad, y, ox0, ox1)) continue;
+        if (inner.w > 0 && inner.h > 0 && span(inner, innerRad, y, ix0, ix1)) {
+            if (ox0 < ix0) {
+                SDL_Rect left{ox0, y, ix0 - ox0, 1};
+                SDL_RenderFillRect(renderer, &left);
+            }
+            if (ix1 < ox1) {
+                SDL_Rect right{ix1, y, ox1 - ix1, 1};
+                SDL_RenderFillRect(renderer, &right);
+            }
+        } else {
+            SDL_Rect row{ox0, y, ox1 - ox0, 1};
+            SDL_RenderFillRect(renderer, &row);
         }
     }
-    const float span = c->at - a->at;
-    const float u = span <= 0.f ? 0.f : (t - a->at) / span;
-    r = static_cast<int>(a->r + (c->r - a->r) * u);
-    g = static_cast<int>(a->g + (c->g - a->g) * u);
-    b = static_cast<int>(a->b + (c->b - a->b) * u);
 }
 
-static void glowRing(SDL_Renderer* renderer, SDL_Rect box, int rad, float time) {
-    const int pad = 3;
-    const int thick = 4;
-    SDL_Rect outer{box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2};
-    SDL_Rect inner{outer.x + thick, outer.y + thick, outer.w - thick * 2, outer.h - thick * 2};
-    int outerRad = rad + pad;
-    int innerRad = std::max(0, outerRad - thick);
-    if (outerRad > outer.w / 2) outerRad = outer.w / 2;
-    if (outerRad > outer.h / 2) outerRad = outer.h / 2;
-    if (innerRad > inner.w / 2) innerRad = inner.w / 2;
-    if (innerRad > inner.h / 2) innerRad = inner.h / 2;
-    const float pulse = 0.72f + 0.28f * (0.5f + 0.5f * std::sin(time * 2.2f));
-    const Uint8 alpha = static_cast<Uint8>(255.f * pulse);
-    const float cx = box.x + box.w * 0.5f;
-    const float cy = box.y + box.h * 0.5f;
-    for (int y = outer.y; y < outer.y + outer.h; ++y) {
-        for (int x = outer.x; x < outer.x + outer.w; ++x) {
-            if (!inRound(x, y, outer, outerRad) || inRound(x, y, inner, innerRad)) continue;
-            const float deg = std::atan2((x + 0.5f) - cx, cy - (y + 0.5f)) * 57.2957795f;
-            int r, g, b;
-            conicColor(deg - time * 40.f, r, g, b);
-            SDL_SetRenderDrawColor(renderer, r, g, b, alpha);
-            SDL_RenderDrawPoint(renderer, x, y);
-        }
+static SDL_Texture* g_wash = nullptr;
+
+static void dropBackdrop() {
+    if (g_wash) SDL_DestroyTexture(g_wash);
+    g_wash = nullptr;
+}
+
+static void drawBackdrop(SDL_Renderer* renderer, int w, int h) {
+    const int sw = 180;
+    const int sh = 102;
+    if (!g_wash) {
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+        g_wash = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, sw, sh);
+        if (g_wash) SDL_SetTextureBlendMode(g_wash, SDL_BLENDMODE_NONE);
     }
+    if (!g_wash) {
+        SDL_SetRenderDrawColor(renderer, 17, 17, 19, 255);
+        SDL_RenderClear(renderer);
+        return;
+    }
+    const float shift = 0.5f + 0.5f * std::sin(static_cast<float>(armGetSystemTick()) / static_cast<float>(std::max<u64>(1, armGetSystemTickFreq())) * 0.22f);
+    std::vector<Uint32> px(static_cast<size_t>(sw) * sh, 0xFF131113u);
+    auto blob = [&](float cx, float cy, float radius, int cr, int cg, int cb, float gain) {
+        const int x0 = std::max(0, static_cast<int>(cx - radius));
+        const int y0 = std::max(0, static_cast<int>(cy - radius));
+        const int x1 = std::min(sw - 1, static_cast<int>(cx + radius));
+        const int y1 = std::min(sh - 1, static_cast<int>(cy + radius));
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                const float dx = x - cx;
+                const float dy = y - cy;
+                const float d = std::sqrt(dx * dx + dy * dy) / radius;
+                if (d >= 1.f) continue;
+                const float a = gain * (1.f - d) * (1.f - d);
+                Uint32& p = px[static_cast<size_t>(y) * sw + x];
+                const int pr = (p >> 16) & 255;
+                const int pg = (p >> 8) & 255;
+                const int pb = p & 255;
+                const int nr = std::min(255, static_cast<int>(pr + cr * a));
+                const int ng = std::min(255, static_cast<int>(pg + cg * a));
+                const int nb = std::min(255, static_cast<int>(pb + cb * a));
+                p = 0xFF000000u | (static_cast<Uint32>(nr) << 16) | (static_cast<Uint32>(ng) << 8) | static_cast<Uint32>(nb);
+            }
+        }
+    };
+    blob(sw * (0.12f + shift * 0.14f), sh * 0.08f, sw * 0.55f, 255, 69, 58, 0.62f);
+    blob(sw * (0.92f - shift * 0.08f), sh * 0.34f, sw * 0.42f, 255, 107, 107, 0.42f);
+    blob(sw * 0.38f, sh * (0.96f - shift * 0.06f), sw * 0.48f, 100, 210, 255, 0.36f);
+    SDL_UpdateTexture(g_wash, nullptr, px.data(), sw * 4);
+    SDL_Rect dest{0, 0, w, h};
+    SDL_RenderCopy(renderer, g_wash, nullptr, &dest);
 }
 
 static void fillDisk(SDL_Renderer* renderer, int cx, int cy, int rad) {
@@ -730,7 +772,7 @@ static void drawChips(SDL_Renderer* renderer, const std::vector<ChipView>& chips
         }
         if (y + rowH >= view.y && y <= view.y + view.h) {
             SDL_Rect box{x0 + x, y, need, rowH};
-            SDL_SetRenderDrawColor(renderer, chip.pal || chip.mine ? 36 : 54, chip.pal || chip.mine ? 72 : 54, chip.pal || chip.mine ? 52 : 62, 255);
+            SDL_SetRenderDrawColor(renderer, chip.pal || chip.mine ? 142 : 245, chip.pal || chip.mine ? 231 : 245, chip.pal || chip.mine ? 181 : 247, chip.pal || chip.mine ? 48 : 28);
             fillRound(renderer, box, rowH / 2);
             int tx = box.x + 14;
             const int ty = box.y + (rowH - chip.name.h) / 2;
@@ -768,13 +810,15 @@ static void buildLive(LiveDraw& live, SDL_Renderer* renderer, TTF_Font* font, TT
         card.open = src.state == "Open";
         card.full = src.state == "Full";
         card.title = makeLabel(renderer, hintFont, ("Lobby " + std::to_string(i + 1)).c_str(), white);
-        if (!src.mode.empty()) card.mode = makeLabel(renderer, tagFont, fitText(tagFont, src.mode, cardW - 32).c_str(), hint);
         if (!src.state.empty())
             card.state = makeLabel(renderer, tagFont, src.state.c_str(), card.open ? green : card.full ? amber : hint);
         if (!src.places.empty()) card.places = makeLabel(renderer, hintFont, src.places.c_str(), white);
-        const int used = card.title.w + 16 + card.state.w + 16 + card.places.w;
-        card.wrapMode = card.mode.tex && used + 16 + card.mode.w + 32 > cardW;
-        card.headH = card.wrapMode ? card.title.h + 8 + card.mode.h : std::max(card.title.h, std::max(card.mode.h, card.places.h));
+        const int stateGap = card.state.tex ? card.state.w + 12 : 0;
+        if (!src.mode.empty()) card.mode = makeLabel(renderer, tagFont, fitText(tagFont, src.mode, cardW - 32 - stateGap).c_str(), hint);
+        int subH = 0;
+        if (card.mode.tex) subH = card.mode.h;
+        if (card.state.tex) subH = std::max(subH, card.state.h);
+        card.headH = card.title.h + (subH ? 6 + subH : 0);
         for (const LiveChip& member : src.members) card.members.push_back(makeChip(renderer, hintFont, tagFont, member));
         const int chipsH = flowHeight(card.members, cardW - 32);
         card.h = 16 + card.headH + (chipsH ? 12 + chipsH : 0) + 16;
@@ -792,8 +836,12 @@ static void buildLive(LiveDraw& live, SDL_Renderer* renderer, TTF_Font* font, TT
             if (col == 0) {
                 int rowH = live.cards[i].h;
                 if (cols == 2 && i + 1 < live.cards.size()) rowH = std::max(rowH, live.cards[i + 1].h);
+                live.cards[i].h = rowH;
                 live.cards[i].y = y;
-                if (cols == 2 && i + 1 < live.cards.size()) live.cards[i + 1].y = y;
+                if (cols == 2 && i + 1 < live.cards.size()) {
+                    live.cards[i + 1].h = rowH;
+                    live.cards[i + 1].y = y;
+                }
                 y += rowH + gap;
             }
             live.cards[i].x = col * (cardW + gap);
@@ -826,24 +874,34 @@ static void drawLive(SDL_Renderer* renderer, const LiveDraw& live, int x0, int y
     for (const CardView& card : live.cards) {
         SDL_Rect box{x0 + card.x, y0 + card.y, card.w, card.h};
         if (box.y + box.h < view.y || box.y > view.y + view.h) continue;
-        SDL_SetRenderDrawColor(renderer, 34, 34, 40, 255);
-        fillRound(renderer, box, 20);
-        int tx = box.x + 16;
-        int ty = box.y + 16;
-        drawLabel(renderer, card.title, tx, ty + (card.wrapMode ? 0 : (card.headH - card.title.h) / 2));
-        tx += card.title.w + 16;
-        if (!card.wrapMode && card.mode.tex) {
-            drawLabel(renderer, card.mode, tx, ty + (card.headH - card.mode.h) / 2);
-            tx += card.mode.w + 16;
-        }
-        if (card.state.tex) drawLabel(renderer, card.state, tx, ty + (card.headH - card.state.h) / 2);
+        glassFill(renderer, box, 20, 150);
+        const int tx = box.x + 16;
+        const int ty = box.y + 16;
+        drawLabel(renderer, card.title, tx, ty);
         if (card.places.tex)
-            drawLabel(renderer, card.places, box.x + card.w - 16 - card.places.w, ty + (card.wrapMode ? 0 : (card.headH - card.places.h) / 2));
-        if (card.wrapMode && card.mode.tex) drawLabel(renderer, card.mode, box.x + 16, ty + card.title.h + 8);
+            drawLabel(renderer, card.places, box.x + card.w - 16 - card.places.w, ty + (card.title.h - card.places.h) / 2);
+        int subH = 0;
+        if (card.mode.tex) subH = card.mode.h;
+        if (card.state.tex) subH = std::max(subH, card.state.h);
+        if (subH) {
+            const int line = ty + card.title.h + 6;
+            int x = tx;
+            if (card.mode.tex) {
+                drawLabel(renderer, card.mode, x, line + (subH - card.mode.h) / 2);
+                x += card.mode.w + 12;
+            }
+            if (card.state.tex)
+                drawLabel(renderer, card.state, x, line + (subH - card.state.h) / 2);
+        }
         if (!card.members.empty()) drawChips(renderer, card.members, box.x + 16, box.y + 16 + card.headH + 12, card.w - 32, view);
     }
     if (live.playerHead.tex) drawLabel(renderer, live.playerHead, x0, y0 + live.playersY - live.playerHead.h - 12);
     if (!live.players.empty()) drawChips(renderer, live.players, x0, y0 + live.playersY, width, view);
+}
+
+extern "C" {
+extern const unsigned char author_bin[];
+extern const unsigned char author_bin_end[];
 }
 
 int main(int argc, char** argv) {
@@ -869,18 +927,40 @@ int main(int argc, char** argv) {
     TTF_Font* creditFont = renderer ? openSystemFont(18) : nullptr;
     timeInitialize();
 
-    const SDL_Color white{255, 255, 255, 255};
-    const SDL_Color hint{230, 230, 235, 255};
-    const SDL_Color credit{145, 145, 150, 255};
+    const SDL_Color white{245, 245, 247, 255};
+    const SDL_Color hint{168, 168, 173, 255};
+    const SDL_Color credit{168, 168, 173, 255};
+    const SDL_Color hot{255, 69, 58, 255};
+    const SDL_Color liveGreen{142, 231, 181, 255};
+    const SDL_Color liveRed{255, 107, 129, 255};
 
-    Label leftHint = makeLabel(renderer, hintFont, "(A) Select   (-) Music   (+) Exit", hint);
+    const SDL_Color ink{17, 17, 19, 255};
+    Label glyphA = makeLabel(renderer, creditFont, "A", ink);
+    Label glyphB = makeLabel(renderer, creditFont, "B", ink);
+    Label glyphX = makeLabel(renderer, creditFont, "X", ink);
+    Label glyphPlus = makeLabel(renderer, creditFont, "+", ink);
+    Label glyphMinus = makeLabel(renderer, creditFont, "-", ink);
+    struct HintItem { char key = 0; Label word; };
+    HintItem hints[4];
+    int hintCount = 0;
+    Label brand = makeLabel(renderer, font, "NexStatus", white);
+    Label navServers = makeLabel(renderer, hintFont, "Servers", hot);
+    Label navAccount = makeLabel(renderer, hintFont, "Account", hint);
+    Label navCredits = makeLabel(renderer, hintFont, "Credits", hint);
+    Label musicWord = makeLabel(renderer, hintFont, "Music", hint);
+    Label musicOn = makeLabel(renderer, hintFont, "On", hot);
+    Label musicOff = makeLabel(renderer, hintFont, "Off", hint);
     Label creditTitle = makeLabel(renderer, font, "Credits", white);
-    Label creditButton = makeLabel(renderer, hintFont, "Credits", white);
     Label creditWho = makeLabel(renderer, hintFont, "ILALEX (SW-8382-3644-7463)", white);
     Label creditRole = makeLabel(renderer, hintFont, "Author", hint);
     Label creditNx = makeLabel(renderer, hintFont, "Nextendo", white);
     Label creditThanks = makeLabel(renderer, hintFont, "Thanks for providing the API.", hint);
-    Label rightHint = makeLabel(renderer, creditFont, APP_VERSION, credit);
+    Label creditVersion = makeLabel(renderer, hintFont, (std::string("Version  ") + APP_VERSION).c_str(), hint);
+    SDL_Texture* authorFace = nullptr;
+    if (renderer) {
+        const std::string face(reinterpret_cast<const char*>(author_bin), static_cast<size_t>(author_bin_end - author_bin));
+        authorFace = textureFromJpeg(renderer, face, true);
+    }
     PublicStatus servers;
     std::vector<ServerRow> serverRows;
     Label bannerTitle;
@@ -894,15 +974,16 @@ int main(int argc, char** argv) {
     float serverScroll = 0;
     float serverShown = 0;
     u64 listTick = 0;
-    int focus = -1;
+    int focus = 0;
     bool focusPlaced = false;
+    int nav = 0;
+    int navPaint = 0;
+    bool inList = false;
     int detail = -1;
     float detailScroll = 0;
     float detailShown = 0;
     u64 detailTick = 0;
     bool pairing = false;
-    bool account = false;
-    bool credits = false;
     SDL_Texture* qrTex = nullptr;
     std::string qrFor;
     std::string pairNote;
@@ -915,7 +996,6 @@ int main(int argc, char** argv) {
     Label friendLabel;
     Label detailPrompt = makeLabel(renderer, hintFont, "Sign in to see lobby and player information.", hint);
     Label detailStatus;
-    SDL_Texture* avatar = nullptr;
     LiveDraw liveDraw;
     std::string detailKey;
     NextendoAuth auth;
@@ -987,9 +1067,18 @@ int main(int argc, char** argv) {
             wh = 720;
         }
 
-        const int barH = 60;
+        const int barH = 56;
         const int barY = wh - barH;
-        const int bannerH = 128;
+        const int edge = 22;
+        const int sideW = 272;
+        const int contentX = edge + sideW + 16;
+        const int contentY = edge;
+        const int contentW = ww - contentX - edge;
+        const int contentH = barY - contentY - edge;
+        const int listCard = 112;
+        const int listGap = 12;
+        const int listPitch = listCard + listGap;
+        const int listHead = 56;
 
         if (servers.ready() && !servers.failed()) {
             const int rev = servers.revision();
@@ -999,10 +1088,8 @@ int main(int argc, char** argv) {
                 std::string keptFocus;
                 if (detail >= 0 && detail < static_cast<int>(serverRows.size())) keptDetail = serverRows[detail].titleId;
                 if (focus >= 0 && focus < static_cast<int>(serverRows.size())) keptFocus = serverRows[focus].titleId;
-                const SDL_Color onlineColor{120, 196, 130, 255};
-                const SDL_Color offlineColor{214, 96, 108, 255};
                 const SDL_Color quietColor{160, 160, 166, 255};
-                const int nameMax = ((ww - 16 * 2 - 10) / 2) - 230;
+                const int nameMax = std::max(80, (contentW - 10) / 2 - 210);
                 bool same = serverRows.size() == games.size();
                 for (size_t i = 0; same && i < games.size(); ++i)
                     same = serverRows[i].titleId == games[i].titleId;
@@ -1036,7 +1123,7 @@ int main(int argc, char** argv) {
                         countsChanged = true;
                         row.kind = kind;
                         row.players = games[i].players;
-                        const SDL_Color statusColor = kind == 0 ? onlineColor : (kind == 1 ? quietColor : offlineColor);
+                        const SDL_Color statusColor = kind == 0 ? liveGreen : (kind == 1 ? quietColor : liveRed);
                         const char* statusText = kind == 0 ? "Online" : (kind == 1 ? "No status" : "Offline");
                         const char* word = "";
                         if (games[i].online)
@@ -1056,11 +1143,11 @@ int main(int argc, char** argv) {
                 const int offlineN = static_cast<int>(games.size()) - onlineN;
                 setText(bannerTitle, renderer, font, head.c_str(), white);
                 setText(bannerSub, renderer, hintFont, "Servers", hint);
-                setText(bannerOnline, renderer, hintFont, ("Online: " + std::to_string(onlineN)).c_str(), onlineColor);
-                setText(bannerOffline, renderer, hintFont, ("Offline: " + std::to_string(offlineN)).c_str(), offlineColor);
+                setText(bannerOnline, renderer, hintFont, ("Online  " + std::to_string(onlineN)).c_str(), liveGreen);
+                setText(bannerOffline, renderer, hintFont, ("Offline  " + std::to_string(offlineN)).c_str(), liveRed);
                 if (countsChanged) {
-                    const std::string stamp = "Updated at " + consoleClock();
-                    setText(bannerTime, renderer, hintFont, stamp.c_str(), hint);
+                    const std::string stamp = fitText(creditFont, "Updated " + consoleClock(), sideW - 48);
+                    setText(bannerTime, renderer, creditFont, stamp.c_str(), hint);
                 }
                 if (!keptDetail.empty()) {
                     detail = -1;
@@ -1074,14 +1161,14 @@ int main(int argc, char** argv) {
                     for (int i = 0; i < static_cast<int>(serverRows.size()); ++i)
                         if (serverRows[i].titleId == keptFocus) { found = i; break; }
                     if (found >= 0 && oldFocus >= 0) {
-                        const float delta = static_cast<float>(found / 2 - oldFocus / 2) * 122.f;
+                        const float delta = static_cast<float>(found / 2 - oldFocus / 2) * static_cast<float>(listPitch);
                         serverScroll += delta;
                         serverShown += delta;
                     }
                     focus = found >= 0 ? found : 0;
                     const int rows = (static_cast<int>(serverRows.size()) + 1) / 2;
-                    const float content = rows > 0 ? rows * 122.f - 10.f : 0.f;
-                    const float view = static_cast<float>(barY - (16 + bannerH + 20) - 24);
+                    const float content = rows > 0 ? rows * static_cast<float>(listPitch) - static_cast<float>(listGap) : 0.f;
+                    const float view = static_cast<float>(std::max(0, contentH - listHead));
                     const float maxScroll = std::max(0.f, content - view);
                     if (serverScroll < 0) serverScroll = 0;
                     if (serverScroll > maxScroll) serverScroll = maxScroll;
@@ -1107,39 +1194,37 @@ int main(int argc, char** argv) {
         }
         if (profileDone.load() && profileThread.joinable()) {
             profileThread.join();
-            setText(loginName, renderer, hintFont, auth.displayName().empty() ? "Signed in" : auth.displayName().c_str(), white);
-            const std::string codeLine = auth.friendCode().empty() ? "" : "Friend code  " + auth.friendCode();
-            setText(friendLabel, renderer, hintFont, codeLine.c_str(), hint);
-            if (auth.accessToken() != config.access_token && !auth.accessToken().empty()) {
-                config.access_token = auth.accessToken();
-                config.refresh_token = auth.refreshToken();
-                config.saveShared();
+            if (!config.access_token.empty()) {
+                setText(loginName, renderer, hintFont, auth.displayName().empty() ? "Signed in" : auth.displayName().c_str(), white);
+                const std::string codeLine = auth.friendCode().empty() ? "" : "Friend code  " + auth.friendCode();
+                setText(friendLabel, renderer, hintFont, codeLine.c_str(), hint);
+                if (auth.accessToken() != config.access_token && !auth.accessToken().empty()) {
+                    config.access_token = auth.accessToken();
+                    config.refresh_token = auth.refreshToken();
+                    config.saveShared();
+                }
             }
         }
 
-        const bool browsing = phaseNow == 0 && detail < 0;
+        if (navPaint != nav) {
+            navPaint = nav;
+            setText(navServers, renderer, hintFont, "Servers", nav == 0 ? hot : hint);
+            setText(navAccount, renderer, hintFont, "Account", nav == 1 ? hot : hint);
+            setText(navCredits, renderer, hintFont, "Credits", nav == 2 ? hot : hint);
+        }
+        const bool browsing = phaseNow == 0 && detail < 0 && !pairing;
         if (!focusPlaced && !serverRows.empty()) { focus = 0; focusPlaced = true; }
         if (browsing && !serverRows.empty() && focus >= static_cast<int>(serverRows.size())) focus = 0;
-        if (phaseNow == 0 && account) {
-            if (down & HidNpadButton_B) account = false;
-            else if (down & HidNpadButton_X) {
-                config.access_token.clear();
-                config.refresh_token.clear();
-                config.saveShared();
-                auth.useTokens({}, {});
-                destroyLabel(loginName);
-                destroyLabel(friendLabel);
-                liveBody.clear();
-                liveError.clear();
-                liveFailed = false;
-                liveTick = 0;
-                detailKey.clear();
-                account = false;
-            }
-        } else if (phaseNow == 0 && pairing) {
+        if (phaseNow == 0 && (down & HidNpadButton_Minus)) {
+            config.music = !config.music;
+            config.saveShared();
+            musicSet(config.music);
+        }
+        if (phaseNow == 0 && pairing) {
             if (down & HidNpadButton_B) {
                 auth.cancelPair();
                 pairing = false;
+                nav = 1;
             }
             std::string access, refresh;
             if (auth.takeTokens(access, refresh)) {
@@ -1153,14 +1238,27 @@ int main(int argc, char** argv) {
                 liveBody.clear();
                 liveTick = 0;
                 pairing = false;
+                nav = 1;
             }
+        } else if (phaseNow == 0 && (down & HidNpadButton_X) && nav == 1 && detail < 0 && !config.access_token.empty()) {
+            config.access_token.clear();
+            config.refresh_token.clear();
+            config.saveShared();
+            auth.useTokens({}, {});
+            destroyLabel(loginName);
+            destroyLabel(friendLabel);
+            liveBody.clear();
+            liveError.clear();
+            liveFailed = false;
+            liveTick = 0;
+            detailKey.clear();
         } else if (phaseNow == 0) {
             const u64 held = padGetButtons(&pad);
             const u64 nowTick = armGetSystemTick();
             const u64 wait = armGetSystemTickFreq() / 6;
             auto ready = [&](u64 bit) { return (down & bit) || ((held & bit) && nowTick >= moveTick); };
             int dCol = 0, dRow = 0;
-            if (detail < 0 && !credits) {
+            if (detail < 0) {
                 if (ready(HidNpadButton_Left)) dCol = -1;
                 else if (ready(HidNpadButton_Right)) dCol = 1;
                 else if (ready(HidNpadButton_Up)) dRow = -1;
@@ -1174,7 +1272,7 @@ int main(int argc, char** argv) {
                         else if (stick.y < -16000) dRow = 1;
                     }
                 }
-            } else if (!credits) {
+            } else {
                 const u64 freq = armGetSystemTickFreq();
                 if (detailTick == 0) detailTick = nowTick;
                 float dt = freq ? static_cast<float>(nowTick - detailTick) / static_cast<float>(freq) : 0.016f;
@@ -1191,28 +1289,30 @@ int main(int argc, char** argv) {
             }
             if (dCol || dRow) {
                 const int n = static_cast<int>(serverRows.size());
-                if (focus < 0) {
-                    if (dRow > 0 && n > 0) focus = 0;
-                    else if (dCol < 0) focus = -2;
-                    else if (dCol > 0) focus = -1;
+                if (!inList) {
+                    if (dRow) nav = std::max(0, std::min(2, nav + dRow));
+                    else if (dCol > 0 && nav == 0 && n > 0) {
+                        inList = true;
+                        if (focus < 0 || focus >= n) focus = 0;
+                    }
+                } else if (dCol < 0 && focus % 2 == 0) {
+                    inList = false;
                 } else if (dCol) {
                     const int col = focus % 2 + dCol;
                     if (col >= 0 && col < 2 && (focus / 2) * 2 + col < n) focus += dCol;
                 } else if (dRow < 0) {
-                    focus = focus < 2 ? -1 : focus - 2;
+                    if (focus >= 2) focus -= 2;
                 } else if (focus + 2 < n) {
                     focus += 2;
                 }
                 moveTick = nowTick + wait;
-                if (focus >= 0) {
-                    const int pitch = 112 + 10;
-                    const int listTop = 16 + bannerH + 20;
+                if (inList && focus >= 0) {
                     const int row = focus / 2;
-                    const float top = static_cast<float>(row * pitch);
-                    const float bottom = top + 112;
-                    const float view = static_cast<float>(barY - listTop - 24);
+                    const float top = static_cast<float>(row * listPitch);
+                    const float bottom = top + listCard;
+                    const float view = static_cast<float>(std::max(0, contentH - listHead));
                     const int rows = (n + 1) / 2;
-                    const float content = rows > 0 ? rows * static_cast<float>(pitch) - 10.f : 0.f;
+                    const float content = rows > 0 ? rows * static_cast<float>(listPitch) - static_cast<float>(listGap) : 0.f;
                     const float maxScroll = std::max(0.f, content - view);
                     if (top < serverScroll) serverScroll = top;
                     if (bottom > serverScroll + view) serverScroll = bottom - view;
@@ -1220,25 +1320,13 @@ int main(int argc, char** argv) {
                     if (serverScroll > maxScroll) serverScroll = maxScroll;
                 }
             }
-            if (credits) {
-                if (down & HidNpadButton_B) credits = false;
-                else if (down & HidNpadButton_Minus) {
-                    config.music = !config.music;
-                    config.saveShared();
-                    musicSet(config.music);
-                }
-            } else if ((down & HidNpadButton_Minus) && detail < 0 && !account && !pairing) {
-                config.music = !config.music;
-                config.saveShared();
-                musicSet(config.music);
-            } else if ((down & HidNpadButton_A) && detail < 0 && focus == -2) {
-                credits = true;
-            } else if ((down & HidNpadButton_A) && detail < 0 && focus < 0) {
-                if (config.access_token.empty()) {
-                    pairing = true;
-                    auth.beginPair();
-                } else account = true;
-            } else if ((down & HidNpadButton_A) && detail < 0 && focus >= 0 && focus < static_cast<int>(serverRows.size())) {
+            if ((down & HidNpadButton_A) && detail < 0 && !inList && nav == 0 && !serverRows.empty()) {
+                inList = true;
+                if (focus < 0 || focus >= static_cast<int>(serverRows.size())) focus = 0;
+            } else if ((down & HidNpadButton_A) && detail < 0 && !inList && nav == 1 && config.access_token.empty()) {
+                pairing = true;
+                auth.beginPair();
+            } else if ((down & HidNpadButton_A) && detail < 0 && inList && focus >= 0 && focus < static_cast<int>(serverRows.size())) {
                 detail = focus;
                 detailScroll = 0;
                 detailShown = 0;
@@ -1247,6 +1335,10 @@ int main(int argc, char** argv) {
                 if (!liveThread.joinable()) liveTick.store(0);
             } else if ((down & HidNpadButton_B) && detail >= 0) {
                 detail = -1;
+            } else if ((down & HidNpadButton_B) && inList) {
+                inList = false;
+            } else if ((down & HidNpadButton_B) && nav != 0) {
+                nav = 0;
             } else if ((down & HidNpadButton_A) && detail >= 0 && config.access_token.empty()) {
                 pairing = true;
                 auth.beginPair();
@@ -1274,22 +1366,48 @@ int main(int argc, char** argv) {
             }
         }
 
-        SDL_SetRenderDrawColor(renderer, 18, 18, 20, 255);
-        SDL_RenderClear(renderer);
+        drawBackdrop(renderer, ww, wh);
 
-        if (account) {
-            const Label& who = loginName.tex ? loginName : loginLabel;
-            int y = 220;
-            drawLabel(renderer, who, (ww - who.w) / 2, y);
-            y += who.h + 16;
-            if (friendLabel.tex) {
-                drawLabel(renderer, friendLabel, (ww - friendLabel.w) / 2, y);
-                y += friendLabel.h + 28;
-            } else y += 28;
-            Label out = makeLabel(renderer, hintFont, "(X) Log out", hint);
-            drawLabel(renderer, out, (ww - out.w) / 2, y);
-            destroyLabel(out);
-        } else if (pairing) {
+        SDL_Rect side{edge, edge, sideW, barY - edge * 2};
+        glassFill(renderer, side, 28, 170);
+        SDL_SetRenderDrawColor(renderer, 255, 69, 58, 255);
+        fillDisk(renderer, side.x + 28, side.y + 36, 6);
+        drawLabel(renderer, brand, side.x + 44, side.y + 36 - brand.h / 2);
+        Label* navLabels[] = {&navServers, &navAccount, &navCredits};
+        const bool sideFocus = detail < 0 && !pairing && !inList;
+        for (int i = 0; i < 3; ++i) {
+            SDL_Rect item{side.x + 14, side.y + 78 + i * 62, side.w - 28, 52};
+            if (nav == i) {
+                glassFill(renderer, item, 18, sideFocus ? 176 : 120);
+                if (sideFocus) {
+                    SDL_SetRenderDrawColor(renderer, 255, 69, 58, 230);
+                    strokeRound(renderer, item, 18, 2);
+                }
+            }
+            drawLabel(renderer, *navLabels[i], item.x + 18, item.y + (item.h - navLabels[i]->h) / 2);
+        }
+        int statY = side.y + 78 + 3 * 62 + 10;
+        if (bannerOnline.tex) {
+            drawLabel(renderer, bannerOnline, side.x + 28, statY);
+            statY += bannerOnline.h + 8;
+        }
+        if (bannerOffline.tex) {
+            drawLabel(renderer, bannerOffline, side.x + 28, statY);
+            statY += bannerOffline.h + 8;
+        }
+        if (bannerTime.tex) drawLabel(renderer, bannerTime, side.x + 28, statY);
+        SDL_Rect musicRow{side.x + 14, side.y + side.h - 68, side.w - 28, 52};
+        glassFill(renderer, musicRow, 18, 140);
+        drawLabel(renderer, musicWord, musicRow.x + 16, musicRow.y + (musicRow.h - musicWord.h) / 2);
+        const Label& musicState = config.music ? musicOn : musicOff;
+        SDL_Rect track{musicRow.x + musicRow.w - 16 - 52, musicRow.y + (musicRow.h - 30) / 2, 52, 30};
+        SDL_SetRenderDrawColor(renderer, config.music ? 255 : 245, config.music ? 69 : 245, config.music ? 58 : 247, config.music ? 255 : 36);
+        fillRound(renderer, track, 15);
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        fillDisk(renderer, config.music ? track.x + track.w - 15 : track.x + 15, track.y + 15, 10);
+        drawLabel(renderer, musicState, track.x - 12 - musicState.w, musicRow.y + (musicRow.h - musicState.h) / 2);
+
+        if (pairing) {
             if (qrFor != auth.pairUrl()) {
                 if (qrTex) SDL_DestroyTexture(qrTex);
                 qrFor = auth.pairUrl();
@@ -1301,24 +1419,24 @@ int main(int argc, char** argv) {
                 pairNote = note;
                 setText(pairStatus, renderer, hintFont, pairNote.c_str(), hint);
             }
-            const int qrSize = 360;
-            SDL_Rect box{72, (barY - qrSize) / 2, qrSize, qrSize};
+            const int qrSize = std::min(320, contentH - 8);
+            SDL_Rect box{contentX, contentY + (contentH - qrSize) / 2, qrSize, qrSize};
             if (qrTex) SDL_RenderCopy(renderer, qrTex, nullptr, &box);
-            const int textX = box.x + box.w + 48;
+            const int textX = box.x + box.w + 36;
             drawLabel(renderer, pairTitle, textX, box.y + 24);
             drawLabel(renderer, pairCode, textX, box.y + 80);
             drawLabel(renderer, pairHelp, textX, box.y + 180);
             if (pairStatus.tex) drawLabel(renderer, pairStatus, textX, box.y + 180 + pairHelp.h + 16);
         } else if (detail >= 0 && detail < static_cast<int>(serverRows.size())) {
             const ServerRow& row = serverRows[detail];
-            const int iconSize = 112;
-            SDL_Rect icon{36, 28, iconSize, iconSize};
+            const int iconSize = 96;
+            SDL_Rect icon{contentX, contentY, iconSize, iconSize};
             if (row.icon) SDL_RenderCopy(renderer, row.icon, nullptr, &icon);
-            Label heading = makeLabel(renderer, font, fitText(font, row.fullName, ww - 200).c_str(), white);
-            drawLabel(renderer, heading, icon.x + iconSize + 24, icon.y + (iconSize - heading.h) / 2);
+            Label heading = makeLabel(renderer, font, fitText(font, row.fullName, contentW - iconSize - 24).c_str(), white);
+            drawLabel(renderer, heading, icon.x + iconSize + 20, icon.y + (iconSize - heading.h) / 2);
             destroyLabel(heading);
-            const int bodyY = icon.y + iconSize + 28;
-            SDL_Rect clip{36, bodyY, ww - 72, barY - 16 - bodyY};
+            const int bodyY = icon.y + iconSize + 20;
+            SDL_Rect clip{contentX, bodyY, contentW, contentY + contentH - bodyY};
             const bool signedIn = !config.access_token.empty();
             if (!signedIn) {
                 drawLabel(renderer, detailPrompt, clip.x, clip.y);
@@ -1357,144 +1475,149 @@ int main(int argc, char** argv) {
                 drawLive(renderer, liveDraw, clip.x, clip.y - static_cast<int>(detailShown), clip.w, clip);
                 SDL_RenderSetClipRect(renderer, nullptr);
             }
-        } else {
-            if (!servers.ready()) {
-                Label loading = makeLabel(renderer, font, "Loading servers...", white);
-                drawLabel(renderer, loading, (ww - loading.w) / 2, (barY - loading.h) / 2);
-                destroyLabel(loading);
-            } else if (servers.failed() || serverRows.empty()) {
-                Label missing = makeLabel(renderer, font, "Couldn't load servers", white);
-                drawLabel(renderer, missing, (ww - missing.w) / 2, (barY - missing.h) / 2);
-                destroyLabel(missing);
-            } else {
-                const int cardH = 112;
-                const int gap = 10;
-                const int margin = 16;
-                const int listTop = margin + bannerH + 20;
-                const int pitch = cardH + gap;
-                const int cardW = (ww - margin * 2 - gap) / 2;
-                const u64 nowList = armGetSystemTick();
-                const u64 listFreq = armGetSystemTickFreq();
-                float listDt = 0.016f;
-                if (listTick != 0 && listFreq != 0)
-                    listDt = std::min(0.05f, static_cast<float>(nowList - listTick) / static_cast<float>(listFreq));
-                listTick = nowList;
-                serverShown += (serverScroll - serverShown) * std::min(1.f, listDt * 12.f);
-                const int scrollI = std::max(0, static_cast<int>(serverShown));
-                const int first = scrollI / pitch;
-                const int off = scrollI - first * pitch;
-                const int rows = (barY - listTop) / pitch + 2;
-                const int iconSize = 80;
-                const int bannerBottom = margin + bannerH;
-                SDL_Rect listClip{0, bannerBottom, ww, barY - bannerBottom};
-                SDL_RenderSetClipRect(renderer, &listClip);
-                for (int r = 0; r < rows; ++r) {
-                    for (int c = 0; c < 2; ++c) {
-                        const int index = (first + r) * 2 + c;
-                        if (index < 0 || index >= static_cast<int>(serverRows.size())) continue;
-                        ServerRow& row = serverRows[index];
-                        const int x = margin + c * (cardW + gap);
-                        const int y = listTop - off + r * pitch;
-                        if (y >= barY || y + cardH <= listTop) continue;
-                        SDL_Rect card{x, y, cardW, cardH};
-                        SDL_SetRenderDrawColor(renderer, 42, 42, 46, 255);
-                        fillRound(renderer, card, 22);
-                        const int blockH = row.name.h + 6 + row.status.h;
-                        const int textY = y + (cardH - blockH) / 2;
-                        const int iconY = y + (cardH - iconSize) / 2;
-                        SDL_Rect icon{x + 16, iconY, iconSize, iconSize};
-                        if (row.icon) SDL_RenderCopy(renderer, row.icon, nullptr, &icon);
-                        const int textX = x + 16 + iconSize + 16;
-                        drawLabel(renderer, row.name, textX, textY);
-                        const int statusY = textY + row.name.h + 6;
-                        const int dotR = 6;
-                        if (row.kind == 2) SDL_SetRenderDrawColor(renderer, 214, 96, 108, 255);
-                        else if (row.kind == 1) SDL_SetRenderDrawColor(renderer, 160, 160, 166, 255);
-                        else SDL_SetRenderDrawColor(renderer, 120, 196, 130, 255);
-                        fillDisk(renderer, textX + dotR, statusY + row.status.h / 2, dotR);
-                        drawLabel(renderer, row.status, textX + dotR * 2 + 8, statusY);
-                        const int numBlock = row.number.h + (row.word.tex ? 2 + row.word.h : 0);
-                        const int numY = y + (cardH - numBlock) / 2;
-                        drawLabel(renderer, row.number, x + cardW - 18 - row.number.w, numY);
-                        if (row.word.tex)
-                            drawLabel(renderer, row.word, x + cardW - 18 - row.word.w, numY + row.number.h + 2);
-                        if (detail < 0 && index == focus) glowRing(renderer, card, 22, static_cast<float>(armGetSystemTick()) / armGetSystemTickFreq());
-                    }
-                }
-                SDL_RenderSetClipRect(renderer, nullptr);
-                SDL_Rect banner{margin, margin, ww - margin * 2, bannerH};
-                SDL_SetRenderDrawColor(renderer, 50, 50, 54, 255);
-                fillRound(renderer, banner, 28);
-                SDL_SetRenderDrawColor(renderer, 120, 196, 130, 255);
-                const int blockH = bannerTitle.h + 4 + bannerSub.h + 4 + bannerOnline.h;
-                const int bannerTextY = banner.y + (banner.h - blockH) / 2;
-                fillDisk(renderer, banner.x + 28, bannerTextY + bannerTitle.h / 2, 7);
-                drawLabel(renderer, bannerTitle, banner.x + 46, bannerTextY);
-                drawLabel(renderer, bannerSub, banner.x + 46, bannerTextY + bannerTitle.h + 4);
-                const int statY = bannerTextY + bannerTitle.h + 4 + bannerSub.h + 4;
-                drawLabel(renderer, bannerOnline, banner.x + 46, statY);
-                SDL_SetRenderDrawColor(renderer, 230, 230, 234, 255);
-                const int dotX = banner.x + 46 + bannerOnline.w + 14;
-                fillDisk(renderer, dotX, statY + bannerOnline.h / 2, 4);
-                drawLabel(renderer, bannerOffline, dotX + 14, statY);
-                const bool signedIn = !config.access_token.empty();
-                const int pillH = 52;
-                const int pillW = signedIn ? loginName.w + 36 : loginLabel.w + 36;
-                const int creditPillW = creditButton.w + 36;
-                SDL_Rect pill{banner.x + banner.w - 18 - pillW, banner.y + (banner.h - pillH) / 2, pillW, pillH};
-                SDL_Rect creditPill{pill.x - 12 - creditPillW, pill.y, creditPillW, pillH};
-                const int statsRight = creditPill.x - 18;
-                drawLabel(renderer, bannerTime, statsRight - bannerTime.w, banner.y + (banner.h - bannerTime.h) / 2);
-                SDL_SetRenderDrawColor(renderer, 32, 32, 36, 255);
-                fillRound(renderer, creditPill, pillH / 2);
-                fillRound(renderer, pill, pillH / 2);
-                drawLabel(renderer, creditButton, creditPill.x + (creditPillW - creditButton.w) / 2, creditPill.y + (pillH - creditButton.h) / 2);
-                drawLabel(renderer, signedIn ? loginName : loginLabel,
-                    pill.x + (pillW - (signedIn ? loginName.w : loginLabel.w)) / 2,
-                    pill.y + (pillH - (signedIn ? loginName.h : loginLabel.h)) / 2);
-                const float glow = static_cast<float>(armGetSystemTick()) / armGetSystemTickFreq();
-                if (detail < 0 && focus == -2) glowRing(renderer, creditPill, pillH / 2, glow);
-                if (detail < 0 && focus == -1) glowRing(renderer, pill, pillH / 2, glow);
+        } else if (nav == 1) {
+            const Label& who = loginName.tex ? loginName : loginLabel;
+            int textH = who.h;
+            if (friendLabel.tex) textH += 10 + friendLabel.h;
+            int cardH = textH + 44;
+            SDL_Rect card{contentX, contentY, contentW, cardH};
+            glassFill(renderer, card, 28, 160);
+            const int textX = card.x + 28;
+            const int textY = card.y + (card.h - textH) / 2;
+            drawLabel(renderer, who, textX, textY);
+            if (friendLabel.tex) drawLabel(renderer, friendLabel, textX, textY + who.h + 10);
+        } else if (nav == 2) {
+            const int face = 72;
+            const int nameBlock = creditWho.h + 6 + creditRole.h;
+            const int rowH = std::max(authorFace ? face : 0, nameBlock);
+            const int cardH = 28 + creditTitle.h + 18 + rowH + 18 + creditVersion.h + 16 + creditNx.h + 8 + creditThanks.h + 28;
+            SDL_Rect card{contentX, contentY, std::min(contentW, 720), cardH};
+            glassFill(renderer, card, 28, 160);
+            int y = card.y + 28;
+            const int x = card.x + 28;
+            drawLabel(renderer, creditTitle, x, y);
+            y += creditTitle.h + 18;
+            const int textX = x + (authorFace ? face + 16 : 0);
+            if (authorFace) {
+                SDL_Rect box{x, y + (rowH - face) / 2, face, face};
+                SDL_RenderCopy(renderer, authorFace, nullptr, &box);
             }
-        }
-        if (credits && !account && !pairing) {
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
-            SDL_Rect shade{0, 0, ww, barY};
-            SDL_RenderFillRect(renderer, &shade);
-            const int cardW = 760;
-            const int cardH = creditTitle.h + creditWho.h + creditRole.h + creditNx.h + creditThanks.h + 148;
-            SDL_Rect card{(ww - cardW) / 2, (barY - cardH) / 2, cardW, cardH};
-            SDL_SetRenderDrawColor(renderer, 46, 46, 52, 255);
-            fillRound(renderer, card, 28);
-            int y = card.y + 36;
-            drawLabel(renderer, creditTitle, card.x + (cardW - creditTitle.w) / 2, y);
-            y += creditTitle.h + 28;
-            drawLabel(renderer, creditWho, card.x + (cardW - creditWho.w) / 2, y);
-            y += creditWho.h + 8;
-            drawLabel(renderer, creditRole, card.x + (cardW - creditRole.w) / 2, y);
-            y += creditRole.h + 24;
-            drawLabel(renderer, creditNx, card.x + (cardW - creditNx.w) / 2, y);
+            const int textY = y + (rowH - nameBlock) / 2;
+            drawLabel(renderer, creditWho, textX, textY);
+            drawLabel(renderer, creditRole, textX, textY + creditWho.h + 6);
+            y += rowH + 18;
+            drawLabel(renderer, creditVersion, x, y);
+            y += creditVersion.h + 16;
+            drawLabel(renderer, creditNx, x, y);
             y += creditNx.h + 8;
-            drawLabel(renderer, creditThanks, card.x + (cardW - creditThanks.w) / 2, y);
+            drawLabel(renderer, creditThanks, x, y);
+        } else if (!servers.ready()) {
+            Label loading = makeLabel(renderer, font, "Loading servers...", white);
+            drawLabel(renderer, loading, contentX + (contentW - loading.w) / 2, contentY + (contentH - loading.h) / 2);
+            destroyLabel(loading);
+        } else if (servers.failed() || serverRows.empty()) {
+            Label missing = makeLabel(renderer, font, "Couldn't load servers", white);
+            drawLabel(renderer, missing, contentX + (contentW - missing.w) / 2, contentY + (contentH - missing.h) / 2);
+            destroyLabel(missing);
+        } else {
+            if (bannerTitle.tex) drawLabel(renderer, bannerTitle, contentX + 8, contentY);
+            const int listTop = contentY + listHead;
+            const int cardW = (contentW - listGap) / 2;
+            const u64 nowList = armGetSystemTick();
+            const u64 listFreq = armGetSystemTickFreq();
+            float listDt = 0.016f;
+            if (listTick != 0 && listFreq != 0)
+                listDt = std::min(0.05f, static_cast<float>(nowList - listTick) / static_cast<float>(listFreq));
+            listTick = nowList;
+            serverShown += (serverScroll - serverShown) * std::min(1.f, listDt * 12.f);
+            const int scrollI = std::max(0, static_cast<int>(serverShown));
+            const int first = scrollI / listPitch;
+            const int off = scrollI - first * listPitch;
+            const int rows = (contentY + contentH - listTop) / listPitch + 2;
+            const int iconSize = 76;
+            SDL_Rect listClip{contentX, listTop, contentW, contentY + contentH - listTop};
+            SDL_RenderSetClipRect(renderer, &listClip);
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < 2; ++c) {
+                    const int index = (first + r) * 2 + c;
+                    if (index < 0 || index >= static_cast<int>(serverRows.size())) continue;
+                    ServerRow& row = serverRows[index];
+                    const int x = contentX + c * (cardW + listGap);
+                    const int y = listTop - off + r * listPitch;
+                    if (y >= listClip.y + listClip.h || y + listCard <= listTop) continue;
+                    SDL_Rect card{x, y, cardW, listCard};
+                    const bool hotCard = inList && index == focus;
+                    glassFill(renderer, card, 22, hotCard ? 186 : 145);
+                    if (hotCard) {
+                        SDL_SetRenderDrawColor(renderer, 255, 69, 58, 235);
+                        strokeRound(renderer, card, 22, 2);
+                    }
+                    const int blockH = row.name.h + 6 + row.status.h;
+                    const int textY = y + (listCard - blockH) / 2;
+                    const int iconY = y + (listCard - iconSize) / 2;
+                    SDL_Rect icon{x + 16, iconY, iconSize, iconSize};
+                    if (row.icon) SDL_RenderCopy(renderer, row.icon, nullptr, &icon);
+                    const int textX = x + 16 + iconSize + 16;
+                    drawLabel(renderer, row.name, textX, textY);
+                    const int statusY = textY + row.name.h + 6;
+                    const int dotR = 5;
+                    if (row.kind == 2) SDL_SetRenderDrawColor(renderer, 255, 107, 129, 255);
+                    else if (row.kind == 1) SDL_SetRenderDrawColor(renderer, 160, 160, 166, 255);
+                    else SDL_SetRenderDrawColor(renderer, 142, 231, 181, 255);
+                    fillDisk(renderer, textX + dotR, statusY + row.status.h / 2, dotR);
+                    drawLabel(renderer, row.status, textX + dotR * 2 + 8, statusY);
+                    const int numBlock = row.number.h + (row.word.tex ? 2 + row.word.h : 0);
+                    const int numY = y + (listCard - numBlock) / 2;
+                    drawLabel(renderer, row.number, x + cardW - 18 - row.number.w, numY);
+                    if (row.word.tex)
+                        drawLabel(renderer, row.word, x + cardW - 18 - row.word.w, numY + row.number.h + 2);
+                }
+            }
+            SDL_RenderSetClipRect(renderer, nullptr);
         }
         SDL_Rect bar{0, barY, ww, barH};
-        SDL_SetRenderDrawColor(renderer, 28, 28, 32, 255);
+        SDL_SetRenderDrawColor(renderer, 17, 17, 19, 176);
         SDL_RenderFillRect(renderer, &bar);
-        SDL_SetRenderDrawColor(renderer, 70, 70, 76, 255);
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 28);
         SDL_RenderDrawLine(renderer, 0, barY, ww, barY);
-        const int wantHint = credits ? 1 : account ? 5 : pairing ? 1 : detail < 0 ? (focus == -2 ? 6 : focus < 0 ? (config.access_token.empty() ? 2 : 4) : 0) : (config.access_token.empty() ? 3 : 1);
+        const int wantHint = pairing ? 1 : detail >= 0 ? (config.access_token.empty() ? 3 : 1) : inList ? 0 : nav == 1 ? (config.access_token.empty() ? 2 : 5) : nav == 2 ? 8 : 7;
         if (wantHint != hintMode) {
             hintMode = wantHint;
-            const char* hintText = "(A) Select   (-) Music   (+) Exit";
-            if (wantHint == 1) hintText = "(B) Back";
-            else if (wantHint == 2) hintText = "(A) Sign in   (-) Music   (+) Exit";
-            else if (wantHint == 3) hintText = "(A) Sign in   (B) Back";
-            else if (wantHint == 4) hintText = "(A) Account   (-) Music   (+) Exit";
-            else if (wantHint == 5) hintText = "(X) Log out   (B) Back";
-            else if (wantHint == 6) hintText = "(A) Credits   (-) Music   (+) Exit";
-            setText(leftHint, renderer, hintFont, hintText, hint);
+            struct Piece { char key; const char* word; };
+            Piece pieces[4]{};
+            int n = 0;
+            auto add = [&](char key, const char* word) { pieces[n++] = {key, word}; };
+            if (wantHint == 1) { add('B', "Back"); add('-', "Music"); add('+', "Exit"); }
+            else if (wantHint == 2) { add('A', "Sign in"); add('B', "Servers"); add('-', "Music"); add('+', "Exit"); }
+            else if (wantHint == 3) { add('A', "Sign in"); add('B', "Back"); }
+            else if (wantHint == 5) { add('X', "Log out"); add('B', "Servers"); add('-', "Music"); add('+', "Exit"); }
+            else if (wantHint == 7) { add('A', "Open"); add('-', "Music"); add('+', "Exit"); }
+            else if (wantHint == 8) { add('B', "Servers"); add('-', "Music"); add('+', "Exit"); }
+            else { add('A', "Select"); add('B', "Menu"); add('-', "Music"); add('+', "Exit"); }
+            for (int i = 0; i < 4; ++i) {
+                if (i < n) {
+                    hints[i].key = pieces[i].key;
+                    setText(hints[i].word, renderer, hintFont, pieces[i].word, hint);
+                } else destroyLabel(hints[i].word);
+            }
+            hintCount = n;
         }
-        drawLabel(renderer, leftHint, 32, barY + (barH - leftHint.h) / 2);
+        int hintX = 24;
+        const int hintRad = 15;
+        const int hintY = barY + barH / 2;
+        for (int i = 0; i < hintCount; ++i) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            fillDisk(renderer, hintX + hintRad, hintY, hintRad);
+            const Label* glyph = &glyphMinus;
+            if (hints[i].key == 'A') glyph = &glyphA;
+            else if (hints[i].key == 'B') glyph = &glyphB;
+            else if (hints[i].key == 'X') glyph = &glyphX;
+            else if (hints[i].key == '+') glyph = &glyphPlus;
+            drawLabel(renderer, *glyph, hintX + hintRad - glyph->w / 2, hintY - glyph->h / 2);
+            hintX += hintRad * 2 + 8;
+            drawLabel(renderer, hints[i].word, hintX, hintY - hints[i].word.h / 2);
+            hintX += hints[i].word.w + 18;
+        }
         int creditRight = ww - 32;
         if (batteryOn) {
             u32 pct = 0;
@@ -1519,16 +1642,14 @@ int main(int argc, char** argv) {
             if (batteryPct > 0 && fill < 1) fill = 1;
             if (fill > 0) {
                 SDL_Rect juice{body.x + 2, body.y + 2, fill, 10};
-                SDL_SetRenderDrawColor(renderer, batteryPct <= 20 && !charging ? 214 : 120, batteryPct <= 20 && !charging ? 96 : 196, batteryPct <= 20 && !charging ? 108 : 130, 255);
+                SDL_SetRenderDrawColor(renderer, batteryPct <= 20 && !charging ? 255 : 142, batteryPct <= 20 && !charging ? 107 : 231, batteryPct <= 20 && !charging ? 129 : 181, 255);
                 SDL_RenderFillRect(renderer, &juice);
             }
             if (batteryLabel.tex) {
                 creditRight -= 8 + batteryLabel.w;
                 drawLabel(renderer, batteryLabel, creditRight, barY + (barH - batteryLabel.h) / 2);
             }
-            creditRight -= 18;
         }
-        drawLabel(renderer, rightHint, creditRight - rightHint.w, barY + (barH - rightHint.h) / 2);
         if (phaseNow != 0) {
             if (phaseNow != updateShown) {
                 updateShown = phaseNow;
@@ -1552,11 +1673,9 @@ int main(int argc, char** argv) {
             SDL_Rect shade{0, 0, ww, wh};
             SDL_RenderFillRect(renderer, &shade);
             SDL_Rect box{(ww - 760) / 2, (wh - 240) / 2, 760, 240};
-            SDL_Rect frame{box.x - 4, box.y - 4, box.w + 8, box.h + 8};
-            SDL_SetRenderDrawColor(renderer, 176, 96, 104, 255);
-            SDL_RenderFillRect(renderer, &frame);
-            SDL_SetRenderDrawColor(renderer, 46, 46, 50, 255);
-            SDL_RenderFillRect(renderer, &box);
+            glassFill(renderer, box, 28, 220);
+            SDL_SetRenderDrawColor(renderer, 255, 69, 58, 230);
+            strokeRound(renderer, box, 28, 2);
             const int blockH = updateTitle.h + (updateBody.tex ? 16 + updateBody.h : 0);
             int textY = box.y + (box.h - blockH) / 2;
             drawLabel(renderer, updateTitle, box.x + (box.w - updateTitle.w) / 2, textY);
@@ -1564,7 +1683,7 @@ int main(int argc, char** argv) {
                 drawLabel(renderer, updateBody, box.x + (box.w - updateBody.w) / 2, textY + updateTitle.h + 16);
             if (phaseNow == 2) {
                 SDL_Rect track{box.x + 48, box.y + box.h - 56, box.w - 96, 18};
-                SDL_SetRenderDrawColor(renderer, 30, 30, 34, 255);
+                SDL_SetRenderDrawColor(renderer, 245, 245, 247, 28);
                 SDL_RenderFillRect(renderer, &track);
                 const curl_off_t got = updateGot.load();
                 const curl_off_t total = updateTotal.load();
@@ -1572,7 +1691,7 @@ int main(int argc, char** argv) {
                 if (fillW > track.w) fillW = track.w;
                 if (fillW > 0) {
                     SDL_Rect fill{track.x, track.y, fillW, track.h};
-                    SDL_SetRenderDrawColor(renderer, 176, 96, 104, 255);
+                    SDL_SetRenderDrawColor(renderer, 255, 69, 58, 255);
                     SDL_RenderFillRect(renderer, &fill);
                 }
                 const std::string stats = downloadStats(got, total, updateSpeed.load());
@@ -1603,7 +1722,6 @@ int main(int argc, char** argv) {
         if (row.icon) SDL_DestroyTexture(row.icon);
     }
     if (qrTex) SDL_DestroyTexture(qrTex);
-    if (avatar) SDL_DestroyTexture(avatar);
     destroyLive(liveDraw);
     destroyLabel(pairTitle);
     destroyLabel(pairHelp);
@@ -1615,14 +1733,26 @@ int main(int argc, char** argv) {
     destroyLabel(batteryLabel);
     destroyLabel(detailPrompt);
     destroyLabel(detailStatus);
-    destroyLabel(leftHint);
+    destroyLabel(glyphA);
+    destroyLabel(glyphB);
+    destroyLabel(glyphX);
+    destroyLabel(glyphPlus);
+    destroyLabel(glyphMinus);
+    for (HintItem& item : hints) destroyLabel(item.word);
     destroyLabel(creditTitle);
-    destroyLabel(creditButton);
+    destroyLabel(brand);
+    destroyLabel(navServers);
+    destroyLabel(navAccount);
+    destroyLabel(navCredits);
+    destroyLabel(musicWord);
+    destroyLabel(musicOn);
+    destroyLabel(musicOff);
     destroyLabel(creditWho);
     destroyLabel(creditRole);
     destroyLabel(creditNx);
     destroyLabel(creditThanks);
-    destroyLabel(rightHint);
+    destroyLabel(creditVersion);
+    if (authorFace) SDL_DestroyTexture(authorFace);
     destroyLabel(bannerTitle);
     destroyLabel(bannerSub);
     destroyLabel(bannerOnline);
@@ -1635,6 +1765,7 @@ int main(int argc, char** argv) {
     if (hintFont) TTF_CloseFont(hintFont);
     if (codeFont) TTF_CloseFont(codeFont);
     if (font) TTF_CloseFont(font);
+    dropBackdrop();
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
     TTF_Quit();

@@ -1058,7 +1058,10 @@ private fun people(array: JSONArray?, withLobby: Boolean, copy: Copy): List<Pers
                 else -> ""
             }
             val extra = buildList {
-                if (withLobby && item.has("lobby") && !item.isNull("lobby")) add(copy.lobbyLabel(item.optInt("lobby") + 1))
+                if (withLobby && item.has("lobby") && !item.isNull("lobby")) {
+                    val lobby = item.optInt("lobby", -1)
+                    if (lobby >= 0) add(copy.lobbyLabel(lobby + 1))
+                }
                 val activity = cleanText(item.optString("activity"))
                 if (activity.isNotEmpty()) add(activity)
             }.joinToString("  ")

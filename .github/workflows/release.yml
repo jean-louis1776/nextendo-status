@@ -145,19 +145,30 @@ jobs:
           body: |
             ## What's new
 
-            Switch homebrew and the Ultrahand overlay are 1.2.2. The Android app is 1.2.1.
+            Switch homebrew and the Ultrahand overlay are 1.3.0. The Android app is 1.2.2.
 
-            - The overlay renews an expired sign-in token on its own and loads lobbies again. The game list was unaffected, because it does not use that token.
-            - Background music is included in the homebrew app and on Android. It starts on, and the choice is remembered. Minus turns it off and on in the homebrew app. On Android, Account has a Music switch under Language. The Android track pauses while the app is in the background.
-            - On the console the track is decoded ahead of playback on its own thread, so the interface stays responsive while the music plays.
-            - Credits open from a button on the homebrew banner, in a card over the list.
+            ### Switch
+
+            Major redesign of the homebrew app. Dark glass panels and the same accent colors as Android. The menu sits in a column on the left (Servers, Account, Credits), and the list or page is on the right.
+
+            - Button hints are white circles with a centered letter, plus, or minus.
+            - The account card is only as tall as the name and friend code. Lobby cards in a row share the height of the taller card. The room name and places sit on the first line, the mode and state on the second.
+            - A player who is not in a lobby is shown by name only. Lobby N appears only when they are in a room.
+            - Credits show the author photo and the version. The version left the bottom bar.
+            - The server list scrolls far enough that the last game is fully on screen.
+            - Signing out while the account is still loading shows Sign in, not the previous name.
+            - The overlay stores the full renewed sign-in token, so lobbies keep loading after the old token expires.
 
             Set Ultrahand **Overlay memory** to **8 MB** before opening the overlay. The 4 MB default is too small and can fail to load the overlay or crash Atmosphere.
+
+            ### Android
+
+            A player who is not in a lobby is shown by name only. Lobby N appears only when they are in a room.
 
             ## Switch
             Extract `nexstatus.zip` at the root of the SD card.
 
             ## Android
-            Install `nexstatus.apk`. This release updates the Android app to 1.2.1. It adds the same background music, with a Music switch on the Account tab. It checks GitHub for a newer APK on launch.
+            Install `nexstatus.apk`. This release updates the Android app to 1.2.2. It checks GitHub for a newer APK on launch.
           generate_release_notes: true
           fail_on_unmatched_files: false

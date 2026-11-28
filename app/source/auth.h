@@ -43,7 +43,6 @@ public:
     const std::string& failReason() const { return failReason_; }
     const std::string& displayName() const { return displayName_; }
     const std::string& friendCode() const { return friendCode_; }
-    const std::string& avatarJpeg() const { return avatarJpeg_; }
 
     void useTokens(const std::string& access, const std::string& refresh);
     bool loadProfile(const std::string& token);
@@ -70,5 +69,4 @@ private:
     std::string failReason_;
     std::string displayName_;
     std::string friendCode_;
-    std::string avatarJpeg_;
 };

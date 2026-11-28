@@ -7,6 +7,7 @@
 #include <mbedtls/base64.h>
 #include <mbedtls/sha256.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -52,7 +53,6 @@ std::string jsonString(const std::string& body, const char* key) {
     if (q2 == std::string::npos) return {};
     return body.substr(q1 + 1, q2 - q1 - 1);
 }
-
 
 std::string base64Url(const unsigned char* data, size_t len) {
     unsigned char buf[64];
@@ -309,7 +309,6 @@ bool NextendoAuth::refresh() {
 bool NextendoAuth::readProfile(const std::string& token) {
     displayName_.clear();
     friendCode_.clear();
-    avatarJpeg_.clear();
     if (token.empty() || !kClientId[0]) return false;
     curl_slist* headers = authHeaders(token);
     std::string me;

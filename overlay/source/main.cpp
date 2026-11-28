@@ -665,7 +665,7 @@ static std::string clip(std::string text, size_t limit) {
     return text;
 }
 
-static std::string rawString(const std::string& obj, const char* key) {
+static std::string rawString(const std::string& obj, const char* key, size_t limit = 64) {
     const std::string pat = std::string("\"") + key + "\"";
     const auto k = obj.find(pat);
     if (k == std::string::npos) return {};
@@ -675,7 +675,7 @@ static std::string rawString(const std::string& obj, const char* key) {
     if (q1 == std::string::npos || q1 > colon + 8) return {};
     const auto q2 = obj.find('"', q1 + 1);
     if (q2 == std::string::npos) return {};
-    return clip(obj.substr(q1 + 1, q2 - q1 - 1), 64);
+    return clip(obj.substr(q1 + 1, q2 - q1 - 1), limit);
 }
 
 static int rawInt(const std::string& obj, const char* key) {
@@ -916,9 +916,9 @@ static bool refreshAccess(const char* ip, std::string& access) {
     curl_slist_free_all(resolve);
     g_bodyCap = oldCap;
     if (rc != CURLE_OK || http < 200 || http >= 300) return false;
-    const std::string next = rawString(response, "access_token");
+    const std::string next = rawString(response, "access_token", 8192);
     if (next.empty()) return false;
-    const std::string rotated = rawString(response, "refresh_token");
+    const std::string rotated = rawString(response, "refresh_token", 8192);
     bool saved = false;
     tsl::hlp::doWithSDCardHandle([&] {
         AppConfig cfg;
